@@ -184,6 +184,36 @@ class Database:
                 deleted=bool(row[7])
             )
         return None
+    
+    def get_latest_available_at_per_topic(self) -> Dict[str, Optional[str]]:
+        """
+        Get the latest available_at timestamp for each topic.
+        
+        Returns:
+            Dictionary mapping topic to latest available_at timestamp (ISO8601 string),
+            or None if no entries exist for that topic
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT topic, MAX(available_at) as latest_available_at
+            FROM songs
+            WHERE deleted = 0
+            GROUP BY topic
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+        
+        result = {}
+        for topic, latest_available_at in rows:
+            result[topic] = latest_available_at
+        
+        # Ensure both topics are in the result
+        for topic in ["Music_Cover", "Original_Song"]:
+            if topic not in result:
+                result[topic] = None
+        
+        return result
 
 
 def hash_file(file_path: Path) -> str:

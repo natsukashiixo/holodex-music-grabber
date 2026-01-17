@@ -1,7 +1,10 @@
 """Holodex API client for querying videos."""
 import httpx
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, TYPE_CHECKING
 from dataclasses import dataclass
+
+if TYPE_CHECKING:
+    from src.db import Database
 
 
 @dataclass
@@ -21,6 +24,7 @@ class HolodexClient:
     """Client for Holodex API."""
     
     BASE_URL = "https://holodex.net/api/v2"
+    RATE_LIMIT_SECONDS = 1
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -38,7 +42,8 @@ class HolodexClient:
         limit: int = 50,
         offset: int = 0,
         status: str = "past",
-        include: List[str] = None
+        include: List[str] = None,
+        from_date: Optional[str] = None
     ) -> List[HolodexVideo]:
         """
         Query videos from Holodex API.
@@ -51,6 +56,7 @@ class HolodexClient:
             offset: Pagination offset
             status: Video status (default: "past")
             include: Extra info to include (e.g., ["songs"])
+            from_date: ISO8601 date string for minimum available_at
         
         Returns:
             List of HolodexVideo objects
@@ -69,6 +75,8 @@ class HolodexClient:
             params["org"] = org
         if include:
             params["include"] = ",".join(include)
+        if from_date:
+            params["from"] = from_date
         
         response = self.client.get("/videos", params=params)
         response.raise_for_status()
@@ -106,15 +114,14 @@ class HolodexClient:
     
     def get_all_music_videos(
         self,
-        channel_ids: Optional[List[str]] = None,
-        org: Optional[str] = None
+        db: Optional['Database'] = None  # type: ignore
     ) -> List[HolodexVideo]:
         """
-        Get all music videos (covers and originals) from specified channels or org.
+        Get all music videos (covers and originals) since last check.
+        Uses topic-based queries with timestamp filtering for efficiency.
         
         Args:
-            channel_ids: List of channel IDs to query (None = all channels)
-            org: Organization filter
+            db: Database instance to get latest timestamps per topic
         
         Returns:
             List of all music videos (deduplicated by video_id)
@@ -122,51 +129,34 @@ class HolodexClient:
         all_videos = []
         seen_video_ids = set()
         
-        if channel_ids:
-            # Query each channel individually
-            for channel_id in channel_ids:
-                for topic in ["Music_Cover", "Original_Song"]:
-                    offset = 0
-                    while True:
-                        videos = self.query_videos(
-                            channel_id=channel_id,
-                            topic=topic,
-                            limit=50,
-                            offset=offset,
-                            include=["songs"]
-                        )
-                        if not videos:
-                            break
-                        # Deduplicate by video_id
-                        for video in videos:
-                            if video.video_id not in seen_video_ids:
-                                seen_video_ids.add(video.video_id)
-                                all_videos.append(video)
-                        if len(videos) < 50:
-                            break
-                        offset += 50
-        else:
-            # Query by org or all
-            for topic in ["Music_Cover", "Original_Song"]:
-                offset = 0
-                while True:
-                    videos = self.query_videos(
-                        topic=topic,
-                        org=org,
-                        limit=50,
-                        offset=offset,
-                        include=["songs"]
-                    )
-                    if not videos:
-                        break
-                    # Deduplicate by video_id
-                    for video in videos:
-                        if video.video_id not in seen_video_ids:
-                            seen_video_ids.add(video.video_id)
-                            all_videos.append(video)
-                    if len(videos) < 50:
-                        break
-                    offset += 50
+        # Get latest timestamps per topic from database
+        latest_timestamps = {}
+        if db:
+            latest_timestamps = db.get_latest_available_at_per_topic()
+        
+        # Query each topic separately
+        for topic in ["Music_Cover", "Original_Song"]:
+            from_date = latest_timestamps.get(topic) if latest_timestamps else None
+            
+            offset = 0
+            while True:
+                videos = self.query_videos(
+                    topic=topic,
+                    limit=50,
+                    offset=offset,
+                    include=["songs"],
+                    from_date=from_date
+                )
+                if not videos:
+                    break
+                # Deduplicate by video_id
+                for video in videos:
+                    if video.video_id not in seen_video_ids:
+                        seen_video_ids.add(video.video_id)
+                        all_videos.append(video)
+                if len(videos) < 50:
+                    break
+                offset += 50
         
         return all_videos
     
