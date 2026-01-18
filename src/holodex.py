@@ -1,10 +1,36 @@
 """Holodex API client for querying videos."""
-import enum
 import httpx
 from typing import List, Dict, Optional
 from dataclasses import dataclass
+import logging
+import time
 
 from src.db import Database
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+
+class RateLimiter:
+    """Rate limiter to control API request frequency."""
+    
+    def __init__(self, rate_per_sec: float):
+        """
+        Initialize rate limiter.
+        
+        Args:
+            rate_per_sec: Maximum number of requests per second
+        """
+        self.interval = 1.0 / rate_per_sec
+        self.next_allowed = time.monotonic()
+    
+    def wait(self):
+        """Wait if necessary to respect rate limit."""
+        now = time.monotonic()
+        if now < self.next_allowed:
+            sleep_time = self.next_allowed - now
+            time.sleep(sleep_time)
+        self.next_allowed = max(self.next_allowed + self.interval, time.monotonic())
 
 
 @dataclass
@@ -22,7 +48,6 @@ class HolodexChannel:
     channel_id: str
     name: str
     english_name: Optional[str] = None
-    type: Optional[enum.Enum] = enum.Enum(str, ["vtuber", "subber"]) | None # use for filtering using conditional later for edge case
     org: Optional[str] = None
     sub_org: Optional[str] = None
 
@@ -30,7 +55,7 @@ class HolodexClient:
     """Client for Holodex API."""
     
     BASE_URL = "https://holodex.net/api/v2"
-    RATE_LIMIT_SECONDS = 1
+    RATE_LIMIT_SECONDS = 2.0
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -39,6 +64,8 @@ class HolodexClient:
             headers={"X-APIKEY": api_key} if api_key else {},
             timeout=30.0
         )
+        # Initialize rate limiter (1 request per RATE_LIMIT_SECONDS)
+        self.rate_limiter = RateLimiter(rate_per_sec=1.0 / self.RATE_LIMIT_SECONDS)
     
     def query_videos(
         self,
@@ -84,9 +111,19 @@ class HolodexClient:
         if from_date:
             params["from"] = from_date
         
-        response = self.client.get("/videos", params=params)
-        response.raise_for_status()
-        data = response.json()
+        # Rate limit API call
+        self.rate_limiter.wait()
+        
+        try:
+            response = self.client.get("/videos", params=params)
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error querying videos: {e.response.status_code} - {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Request error querying videos: {e}")
+            raise
         
         videos = []
         for item in data:
@@ -145,6 +182,9 @@ class HolodexClient:
             
             if latest_info:
                 stop_video_id, from_date = latest_info
+                logger.debug(f"Querying {topic} from {from_date}, stopping at {stop_video_id}")
+            else:
+                logger.debug(f"Querying all {topic} videos (no previous entries)")
             
             offset = 0
             while True:
@@ -158,12 +198,15 @@ class HolodexClient:
                 if not videos:
                     break
                 
+                logger.debug(f"Retrieved {len(videos)} {topic} videos (offset: {offset})")
+                
                 # Process videos and check if we've reached the stop point
                 found_stop_video = False
                 for video in videos:
                     # If we encounter the video_id we used for the latest timestamp, stop
                     if stop_video_id and video.video_id == stop_video_id:
                         found_stop_video = True
+                        logger.debug(f"Reached stop video {stop_video_id} for {topic}")
                         break
                     
                     # Deduplicate by video_id
@@ -185,17 +228,26 @@ class HolodexClient:
     def query_channel(self, channel_id: str) -> HolodexChannel:
         '''Queries channel endpoint using channel_id
         Returns HolodexChannel dataclass'''
-        response = self.client.get(f"/channels/{channel_id}")
-        response.raise_for_status()
-        data = response.json()
-        return HolodexChannel(
-            channel_id=data["id"],
-            name=data["name"],
-            english_name=data["english_name"],
-            type=data["type"],
-            org=data["org"],
-            sub_org=data["suborg"],
-        )
+        # Rate limit API call
+        self.rate_limiter.wait()
+        
+        try:
+            response = self.client.get(f"/channels/{channel_id}")
+            response.raise_for_status()
+            data = response.json()
+            return HolodexChannel(
+                channel_id=data["id"],
+                name=data["name"],
+                english_name=data["english_name"],
+                org=data["org"],
+                sub_org=data["suborg"],
+            )
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error querying channel {channel_id}: {e.response.status_code} - {e.response.text}")
+            raise
+        except httpx.RequestError as e:
+            logger.error(f"Request error querying channel {channel_id}: {e}")
+            raise
 
     def close(self):
         """Close the HTTP client."""

@@ -1,10 +1,14 @@
 """Utility functions for video processing and file verification."""
 import sqlite3
 from pathlib import Path
+import logging
 
 from src.db import Database, Channel, Song, hash_file
 from src.holodex import HolodexVideo
 from src.downloader import MusicDownloader
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def check_file_exists(file_path: Path) -> bool:
@@ -22,7 +26,7 @@ def verify_existing_files(db: Database, base_dir: Path):
     
     for video_id, file_path in rows:
         if file_path and not check_file_exists(base_dir / file_path):
-            print(f"File missing, marking as deleted: {video_id}")
+            logger.warning(f"File missing, marking as deleted: {video_id}")
             db.mark_deleted(video_id)
 
 
@@ -34,19 +38,34 @@ def process_video(
 ) -> bool:
     """
     Process a single video: download if needed, hash, deduplicate, store in DB.
+    Uses file_hash as source of truth - if NULL, video needs to be downloaded.
     
     Returns:
         True if successfully processed, False otherwise
     """
-    # Check if already in database
-    if skip_existing and db.song_exists(video.video_id):
+    # Check if already successfully processed (has file_hash)
+    if skip_existing:
         existing = db.get_song(video.video_id)
-        if existing and existing.file_path and check_file_exists(Path(existing.file_path)):
-            print(f"Already exists: {video.title} ({video.video_id})")
-            return True
+        if existing and existing.file_hash:
+            # Verify file still exists
+            if existing.file_path and check_file_exists(downloader.base_output_dir / existing.file_path):
+                logger.debug(f"Already exists: {video.title} ({video.video_id})")
+                return True
+            # File missing but hash exists - mark as deleted and retry
+            logger.warning(f"File missing for {video.title}, will retry download")
+            db.mark_deleted(video.video_id)
+    
+    # Update channel info first (always do this)
+    channel = Channel(
+        channel_id=video.channel_id,
+        name=video.channel_name,
+        org=video.org,
+        sub_org=video.sub_org
+    )
+    db.upsert_channel(channel)
     
     # Download the video
-    print(f"Downloading: {video.title}")
+    logger.info(f"Downloading: {video.title}")
     result = downloader.download(
         video_id=video.video_id,
         org=video.org,
@@ -56,12 +75,36 @@ def process_video(
         title=video.title
     )
     
+    # Always add/update song in DB, even on failure (with NULL file_hash)
+    # This allows cron to pick up where it left off
     if not result.success:
-        print(f"Download failed: {result.error}")
+        logger.error(f"Download failed: {result.error}")
+        # Add to DB with NULL file_hash so we can retry later
+        song = Song(
+            video_id=video.video_id,
+            channel_id=video.channel_id,
+            title=video.title,
+            topic=video.topic,
+            available_at=video.available_at,
+            file_hash=None,
+            file_path=None
+        )
+        db.add_song(song)
         return False
     
     if not result.file_path or not result.file_path.exists():
-        print(f"Download completed but file not found: {video.title}")
+        logger.error(f"Download completed but file not found: {video.title}")
+        # Add to DB with NULL file_hash so we can retry later
+        song = Song(
+            video_id=video.video_id,
+            channel_id=video.channel_id,
+            title=video.title,
+            topic=video.topic,
+            available_at=video.available_at,
+            file_hash=None,
+            file_path=None
+        )
+        db.add_song(song)
         return False
     
     # Calculate file hash
@@ -70,24 +113,15 @@ def process_video(
     # Check for duplicates
     duplicate_video_id = db.hash_exists(file_hash)
     if duplicate_video_id and duplicate_video_id != video.video_id:
-        print(f"Duplicate detected! Hash matches {duplicate_video_id}")
-        print(f"  Current: {video.title} ({video.video_id})")
+        logger.warning(f"Duplicate detected! Hash matches {duplicate_video_id}")
+        logger.warning(f"  Current: {video.title} ({video.video_id})")
         existing = db.get_song(duplicate_video_id)
         if existing:
-            print(f"  Existing: {existing.title} ({duplicate_video_id})")
+            logger.warning(f"  Existing: {existing.title} ({duplicate_video_id})")
         # Still add to DB but note it's a duplicate
         # You might want to delete the file here if you want strict deduplication
     
-    # Update channel info
-    channel = Channel(
-        channel_id=video.channel_id,
-        name=video.channel_name,
-        org=video.org,
-        sub_org=video.sub_org
-    )
-    db.upsert_channel(channel)
-    
-    # Add song to database
+    # Add song to database with file_hash (marks as successfully processed)
     song = Song(
         video_id=video.video_id,
         channel_id=video.channel_id,
@@ -99,5 +133,5 @@ def process_video(
     )
     db.add_song(song)
     
-    print(f"✓ Processed: {video.title}")
+    logger.info(f"✓ Processed: {video.title}")
     return True

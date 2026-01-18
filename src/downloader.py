@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 from typing import Optional, Dict
 from dataclasses import dataclass
+import logging
+
+from src.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 @dataclass
