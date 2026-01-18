@@ -1,0 +1,3 @@
+[Paths]
+download_folder = '~/Music/'
+database_path = './db/'
