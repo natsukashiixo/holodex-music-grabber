@@ -4,9 +4,10 @@ from pathlib import Path
 import logging
 
 from src.db import Database, Channel, Song, hash_file
-from src.holodex import HolodexVideo
+from src.holodex import HolodexVideo, HolodexClient
 from src.downloader import MusicDownloader
 from src.logging_config import get_logger
+from typing import Optional
 
 logger = get_logger(__name__)
 
@@ -34,7 +35,8 @@ def process_video(
     video: HolodexVideo,
     db: Database,
     downloader: MusicDownloader,
-    skip_existing: bool = True
+    skip_existing: bool = True,
+    client: Optional['HolodexClient'] = None  # type: ignore
 ) -> bool:
     """
     Process a single video: download if needed, hash, deduplicate, store in DB.
@@ -55,12 +57,29 @@ def process_video(
             logger.warning(f"File missing for {video.title}, will retry download")
             db.mark_deleted(video.video_id)
     
-    # Update channel info first (always do this)
+    # Get channel info from DB or query API if needed
+    # Note: /videos endpoint doesn't include channel details (org/suborg), so we need to query separately
+    db_channel = db.get_channel(video.channel_id)
+    channel_name = db_channel.name if db_channel else video.channel_name or "Unknown"
+    org = db_channel.org if db_channel else video.org
+    sub_org = db_channel.sub_org if db_channel else video.sub_org
+    
+    # If we don't have org/suborg and have a client, try querying the channel endpoint
+    if (org is None or sub_org is None) and client:
+        try:
+            holodex_channel = client.query_channel(video.channel_id)
+            channel_name = holodex_channel.name or channel_name
+            org = holodex_channel.org or org
+            sub_org = holodex_channel.sub_org or sub_org
+        except Exception as e:
+            logger.debug(f"Could not query channel info for {video.channel_id}: {e}")
+    
+    # Update channel info in DB
     channel = Channel(
         channel_id=video.channel_id,
-        name=video.channel_name,
-        org=video.org,
-        sub_org=video.sub_org
+        name=channel_name,
+        org=org,
+        sub_org=sub_org
     )
     db.upsert_channel(channel)
     
@@ -68,9 +87,9 @@ def process_video(
     logger.info(f"Downloading: {video.title}")
     result = downloader.download(
         video_id=video.video_id,
-        org=video.org,
-        sub_org=video.sub_org,
-        channel_name=video.channel_name,
+        org=org,
+        sub_org=sub_org,
+        channel_name=channel_name,
         topic=video.topic,
         title=video.title
     )

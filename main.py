@@ -127,7 +127,7 @@ def main():
         
         for i, video in enumerate(videos, 1):
             logger.info(f"[{i}/{len(videos)}] Processing: {video.title}")
-            if process_video(video, db, downloader, skip_existing=args.skip_existing):
+            if process_video(video, db, downloader, skip_existing=args.skip_existing, client=client):
                 success_count += 1
             else:
                 fail_count += 1

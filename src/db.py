@@ -37,6 +37,11 @@ class Database:
     
     def _init_db(self):
         """Initialize database schema."""
+        # Create parent directory if it doesn't exist
+        db_path_obj = Path(self.db_path)
+        if db_path_obj.parent != db_path_obj:  # Not root directory
+            db_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         

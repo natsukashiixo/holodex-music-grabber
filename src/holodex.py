@@ -41,6 +41,9 @@ class HolodexVideo:
     title: str
     topic: str  # "Music_Cover" or "Original_Song"
     available_at: str
+    channel_name: Optional[str] = None
+    org: Optional[str] = None
+    sub_org: Optional[str] = None
 
 @dataclass
 class HolodexChannel:
@@ -141,12 +144,17 @@ class HolodexClient:
             
             # Only include if it's a music-related topic
             if topic_value in ["Music_Cover", "Original_Song"]:
+                # Note: /videos endpoint doesn't include channel object or org/suborg at top level
+                # Channel info will be fetched from DB or queried separately if needed
                 video = HolodexVideo(
                     video_id=item["id"],
                     channel_id=item["channel_id"],
                     title=item["title"],
                     topic=topic_value,
                     available_at=item["available_at"],
+                    channel_name=None,  # Not available in /videos response
+                    org=None,  # Not available in /videos response
+                    sub_org=None,  # Not available in /videos response
                 )
                 videos.append(video)
         
