@@ -1,10 +1,10 @@
 """Holodex API client for querying videos."""
+import enum
 import httpx
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import List, Dict, Optional
 from dataclasses import dataclass
 
-if TYPE_CHECKING:
-    from src.db import Database
+from src.db import Database
 
 
 @dataclass
@@ -12,13 +12,19 @@ class HolodexVideo:
     """Video information from Holodex API."""
     video_id: str
     channel_id: str
-    channel_name: str
     title: str
     topic: str  # "Music_Cover" or "Original_Song"
     available_at: str
+
+@dataclass
+class HolodexChannel:
+    """Channel information from Holodex API."""
+    channel_id: str
+    name: str
+    english_name: Optional[str] = None
+    type: Optional[enum.Enum] = enum.Enum(str, ["vtuber", "subber"]) | None # use for filtering using conditional later for edge case
     org: Optional[str] = None
     sub_org: Optional[str] = None
-
 
 class HolodexClient:
     """Client for Holodex API."""
@@ -100,13 +106,10 @@ class HolodexClient:
             if topic_value in ["Music_Cover", "Original_Song"]:
                 video = HolodexVideo(
                     video_id=item["id"],
-                    channel_id=item["channel"]["id"],
-                    channel_name=item["channel"]["name"],
+                    channel_id=item["channel_id"],
                     title=item["title"],
                     topic=topic_value,
                     available_at=item["available_at"],
-                    org=item.get("channel", {}).get("org"),
-                    sub_org=item.get("channel", {}).get("suborg")
                 )
                 videos.append(video)
         
@@ -129,14 +132,19 @@ class HolodexClient:
         all_videos = []
         seen_video_ids = set()
         
-        # Get latest timestamps per topic from database
-        latest_timestamps = {}
+        # Get latest timestamps and video_ids per topic from database
+        latest_per_topic = {}
         if db:
-            latest_timestamps = db.get_latest_available_at_per_topic()
+            latest_per_topic = db.get_latest_available_at_per_topic()
         
         # Query each topic separately
         for topic in ["Music_Cover", "Original_Song"]:
-            from_date = latest_timestamps.get(topic) if latest_timestamps else None
+            latest_info = latest_per_topic.get(topic) if latest_per_topic else None
+            from_date = None
+            stop_video_id = None
+            
+            if latest_info:
+                stop_video_id, from_date = latest_info
             
             offset = 0
             while True:
@@ -149,17 +157,46 @@ class HolodexClient:
                 )
                 if not videos:
                     break
-                # Deduplicate by video_id
+                
+                # Process videos and check if we've reached the stop point
+                found_stop_video = False
                 for video in videos:
+                    # If we encounter the video_id we used for the latest timestamp, stop
+                    if stop_video_id and video.video_id == stop_video_id:
+                        found_stop_video = True
+                        break
+                    
+                    # Deduplicate by video_id
                     if video.video_id not in seen_video_ids:
                         seen_video_ids.add(video.video_id)
                         all_videos.append(video)
+                
+                # Break out of outer loop if we hit the stop video_id
+                if found_stop_video:
+                    break
+                
+                # Continue pagination if we haven't reached the stop point
                 if len(videos) < 50:
                     break
                 offset += 50
         
         return all_videos
     
+    def query_channel(self, channel_id: str) -> HolodexChannel:
+        '''Queries channel endpoint using channel_id
+        Returns HolodexChannel dataclass'''
+        response = self.client.get(f"/channels/{channel_id}")
+        response.raise_for_status()
+        data = response.json()
+        return HolodexChannel(
+            channel_id=data["id"],
+            name=data["name"],
+            english_name=data["english_name"],
+            type=data["type"],
+            org=data["org"],
+            sub_org=data["suborg"],
+        )
+
     def close(self):
         """Close the HTTP client."""
         self.client.close()

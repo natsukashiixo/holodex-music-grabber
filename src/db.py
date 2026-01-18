@@ -44,7 +44,8 @@ class Database:
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS channels (
                 channel_id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
+                name TEXT,
+                english_name TEXT,
                 org TEXT,
                 sub_org TEXT
             )
@@ -104,7 +105,7 @@ class Database:
         if row:
             return Channel(*row)
         return None
-    
+
     def song_exists(self, video_id: str) -> bool:
         """Check if song already exists in database."""
         conn = sqlite3.connect(self.db_path)
@@ -185,28 +186,36 @@ class Database:
             )
         return None
     
-    def get_latest_available_at_per_topic(self) -> Dict[str, Optional[str]]:
+    def get_latest_available_at_per_topic(self) -> Dict[str, Optional[tuple[str, str]]]:
         """
-        Get the latest available_at timestamp for each topic.
+        Get the latest available_at timestamp and video_id for each topic.
         
         Returns:
-            Dictionary mapping topic to latest available_at timestamp (ISO8601 string),
+            Dictionary mapping topic to tuple of (video_id, available_at timestamp),
             or None if no entries exist for that topic
         """
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        # Get one video_id with the maximum available_at for each topic
+        # Use MIN(video_id) to deterministically pick one if multiple have same timestamp
         cursor.execute("""
-            SELECT topic, MAX(available_at) as latest_available_at
+            SELECT topic, MIN(video_id) as video_id, MAX(available_at) as available_at
             FROM songs
             WHERE deleted = 0
+            AND (topic, available_at) IN (
+                SELECT topic, MAX(available_at)
+                FROM songs
+                WHERE deleted = 0
+                GROUP BY topic
+            )
             GROUP BY topic
         """)
         rows = cursor.fetchall()
         conn.close()
         
         result = {}
-        for topic, latest_available_at in rows:
-            result[topic] = latest_available_at
+        for topic, video_id, available_at in rows:
+            result[topic] = (video_id, available_at)
         
         # Ensure both topics are in the result
         for topic in ["Music_Cover", "Original_Song"]:
