@@ -11,6 +11,7 @@ from typing import Optional
 
 logger = get_logger(__name__)
 
+# TODO: verify that current upsert logic in process_video() can remain unchanged
 
 def check_file_exists(file_path: Path) -> bool:
     """Check if file exists and is not deleted."""

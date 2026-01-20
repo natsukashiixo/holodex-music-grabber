@@ -10,6 +10,11 @@ from src.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# TODO: Implement a write queue into db
+# TODO: Double check if we store entire query in memory or not because if we do thats bad
+# TODO: response caching
+# TODO: song confidence algorithm + logging of false positives that can be reported upstream
+# TODO: move initial database adds to get_all_music_videos()
 
 class RateLimiter:
     """Rate limiter to control API request frequency."""
@@ -50,7 +55,7 @@ class HolodexChannel:
     """Channel information from Holodex API."""
     channel_id: str
     name: str
-    english_name: Optional[str] = None
+    english_name: Optional[str] = None # either not accessed correctly here, or not assigned properly in db
     org: Optional[str] = None
     sub_org: Optional[str] = None
 
@@ -78,7 +83,6 @@ class HolodexClient:
         limit: int = 50,
         offset: int = 0,
         status: str = "past",
-        include: List[str] = None,
         from_date: Optional[str] = None
     ) -> List[HolodexVideo]:
         """
@@ -91,7 +95,6 @@ class HolodexClient:
             limit: Maximum results (max 50)
             offset: Pagination offset
             status: Video status (default: "past")
-            include: Extra info to include (e.g., ["songs"])
             from_date: ISO8601 date string for minimum available_at
         
         Returns:
@@ -109,8 +112,6 @@ class HolodexClient:
             params["topic"] = topic
         if org:
             params["org"] = org
-        if include:
-            params["include"] = ",".join(include)
         if from_date:
             params["from"] = from_date
         
@@ -130,31 +131,39 @@ class HolodexClient:
         
         videos = []
         for item in data:
-            # Extract topic from songs if available
+            # Extract topic - API uses topic_id field, but may also have songs array
             topic_value = None
-            if "songs" in item:
+            
+            # First check topic_id (primary field)
+            if "topic_id" in item:
+                topic_id = item["topic_id"]
+                if topic_id in ["Music_Cover", "Original_Song"]:
+                    topic_value = topic_id
+            
+            # Fallback to songs array if topic_id not found
+            if not topic_value and "songs" in item:
                 for song in item.get("songs", []):
                     if song.get("name") in ["Music_Cover", "Original_Song"]:
                         topic_value = song["name"]
                         break
             
-            # Fallback to topic field if songs not available
+            # Fallback to topic field (legacy)
             if not topic_value and "topic" in item:
                 topic_value = item["topic"]
             
             # Only include if it's a music-related topic
             if topic_value in ["Music_Cover", "Original_Song"]:
-                # Note: /videos endpoint doesn't include channel object or org/suborg at top level
-                # Channel info will be fetched from DB or queried separately if needed
+                # Extract channel info from response (channel object is included when querying by topic)
+                channel_info = item.get("channel", {})
                 video = HolodexVideo(
                     video_id=item["id"],
-                    channel_id=item["channel_id"],
+                    channel_id=item.get("channel_id") or channel_info.get("id", ""),
                     title=item["title"],
                     topic=topic_value,
                     available_at=item["available_at"],
-                    channel_name=None,  # Not available in /videos response
-                    org=None,  # Not available in /videos response
-                    sub_org=None,  # Not available in /videos response
+                    channel_name=channel_info.get("name"),
+                    org=channel_info.get("org"),
+                    sub_org=channel_info.get("suborg"),
                 )
                 videos.append(video)
         
@@ -200,7 +209,6 @@ class HolodexClient:
                     topic=topic,
                     limit=50,
                     offset=offset,
-                    include=["songs"],
                     from_date=from_date
                 )
                 if not videos:

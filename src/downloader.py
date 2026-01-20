@@ -10,6 +10,21 @@ from src.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# TODO: add channel ID to folder name
+# TODO: if suborg is greater than 2 characters, strip them otherwise pass
+# TODO: set up js runtime for yt-dlp
+# TODO: log if video is membersonly and store in db. if no file hash + true then skip
+# TODO: log if video is privated/deleted. if no file hash + true then skip
+# TODO: download into cache folder then move to target?
+# TODO: use yt-dlp to grab captions for starters, use youtube data api if its unreliable
+
+# TODO: cloudflare solver failing as well? need to set up a sandboxed yt account?
+FAKE_MULTILINE_COMMENT = """2026-01-19 21:52:09 [ERROR   ] src.utils: Download failed: yt-dlp error: WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default; to use another runtime add  --js-runtimes RUNTIME[:PATH]  to your command/config. YouTube extraction without a JS runtime has been deprecated, and some formats may be missing. See  https://github.com/yt-dlp/yt-dlp/wiki/EJS  for details on installing one
+WARNING: [youtube] mUudSg8Cs4I: Some web_safari client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details
+WARNING: [youtube] mUudSg8Cs4I: Signature solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+WARNING: [youtube] mUudSg8Cs4I: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
+WARNING: [youtube] mUudSg8Cs4I: Some web client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details
+ERROR: The downloaded file is empty"""
 
 @dataclass
 class DownloadResult:

@@ -7,7 +7,7 @@ from typing import Optional
 
 def setup_logging(
     log_dir: Optional[Path] = None,
-    log_level: str = "INFO",
+    log_level: str = "DEBUG",
     app_name: str = "holodex-music-grabber"
 ) -> logging.Logger:
     """
