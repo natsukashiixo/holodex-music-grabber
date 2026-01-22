@@ -41,7 +41,7 @@ class SongInfo:
             ])
         return float(out.strip())
 
-    def _calculate_confidence(self):
+    def _calculate_confidence(self) -> float:
         # gonna need to do a lot of things
         # might even need an NLP model (probably not I just want an NLP model)
         # the easiest thing to implement is probably some algo that exponentially decreases the confidence based on duration (should hit -0.9 confidence at 20 minutes or something like that)
