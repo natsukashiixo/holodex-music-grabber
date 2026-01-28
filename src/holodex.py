@@ -15,6 +15,7 @@ logger = get_logger(__name__)
 # TODO: response caching
 # TODO: song confidence algorithm + logging of false positives that can be reported upstream
 # TODO: move initial database adds to get_all_music_videos()
+# TODO: create function that only stores responses where "topic_id" key is missing. Store duration + title + other stuff needed to run confidence algo
 
 class RateLimiter:
     """Rate limiter to control API request frequency."""
