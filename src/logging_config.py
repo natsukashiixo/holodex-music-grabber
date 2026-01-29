@@ -11,7 +11,7 @@ def setup_logging(
     app_name: str = "holodex-music-grabber"
 ) -> logging.Logger:
     """
-    Set up logging configuration following Linux best practices.
+    Set up logging configuration.
     
     Logs are stored in:
     - ~/.local/share/<app_name>/logs/ (XDG Base Directory spec)
