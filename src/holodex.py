@@ -7,13 +7,13 @@ import time
 
 from src.db import Database
 from src.logging_config import get_logger
+from src.utils import sanitize_suborg
 
 logger = get_logger(__name__)
 
 # TODO: Implement a write queue into db
 # TODO: Double check if we store entire query in memory or not because if we do thats bad
 # TODO: response caching
-# TODO: song confidence algorithm + logging of false positives that can be reported upstream
 # TODO: move initial database adds to get_all_music_videos()
 # TODO: create function that only stores responses where "topic_id" key is missing. Store duration + title + other stuff needed to run confidence algo
 
@@ -59,6 +59,10 @@ class HolodexChannel:
     english_name: Optional[str] = None # either not accessed correctly here, or not assigned properly in db
     org: Optional[str] = None
     sub_org: Optional[str] = None
+
+    def __post_init__(self):
+        if self.sub_org:
+            self.sub_org = sanitize_suborg(self.sub_org)
 
 class HolodexClient:
     """Client for Holodex API."""

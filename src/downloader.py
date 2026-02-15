@@ -1,38 +1,51 @@
 """Downloader module using yt-dlp."""
-import subprocess
-import json
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional
 from dataclasses import dataclass
-import logging
+
+import yt_dlp
 
 from src.logging_config import get_logger
+from src.utils import fs_sanitize
 
 logger = get_logger(__name__)
 
-# TODO: add channel ID to folder name
-# TODO: if suborg is greater than 2 characters, strip them otherwise pass
-# TODO: set up js runtime for yt-dlp
 # TODO: log if video is membersonly and store in db. if no file hash + true then skip
 # TODO: log if video is privated/deleted. if no file hash + true then skip
 # TODO: download into cache folder then move to target?
-# TODO: use yt-dlp to grab captions for starters, use youtube data api if its unreliable
+# TODO: leverage yt-dlp built in concurrency
+# TODO: use yt-dlp to grab captions (separate function)
+# TODO: implement SABR+PO_Token
 
-# TODO: cloudflare solver failing as well? need to set up a sandboxed yt account?
-FAKE_MULTILINE_COMMENT = """2026-01-19 21:52:09 [ERROR   ] src.utils: Download failed: yt-dlp error: WARNING: [youtube] No supported JavaScript runtime could be found. Only deno is enabled by default; to use another runtime add  --js-runtimes RUNTIME[:PATH]  to your command/config. YouTube extraction without a JS runtime has been deprecated, and some formats may be missing. See  https://github.com/yt-dlp/yt-dlp/wiki/EJS  for details on installing one
-WARNING: [youtube] mUudSg8Cs4I: Some web_safari client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details
-WARNING: [youtube] mUudSg8Cs4I: Signature solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
-WARNING: [youtube] mUudSg8Cs4I: n challenge solving failed: Some formats may be missing. Ensure you have a supported JavaScript runtime and challenge solver script distribution installed. Review any warnings presented before this message. For more details, refer to  https://github.com/yt-dlp/yt-dlp/wiki/EJS
-WARNING: [youtube] mUudSg8Cs4I: Some web client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details
-ERROR: The downloaded file is empty"""
+FAKE_MULTILINE_COMMENT = """
+WARNING: [youtube] mUudSg8Cs4I: Some web_safari client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details"""
 
 @dataclass
 class DownloadResult:
-    """Result of a download operation."""
     success: bool
     file_path: Optional[Path] = None
     error: Optional[str] = None
 
+    @property
+    def members_only(self) -> bool:
+        return bool(
+            self.error
+            and "This video is available to this channel's members" in self.error
+        )
+
+    @property
+    def privated(self) -> bool:
+        return bool(
+            self.error
+            and "Private video. Sign in if you've been granted access" in self.error
+        )
+
+    @property
+    def deleted(self) -> bool:
+        return bool(
+            self.error
+            and "Video unavailable. This video has been removed by the uploader" in self.error
+        )
 
 class MusicDownloader:
     """Downloader for music using yt-dlp."""
@@ -46,6 +59,7 @@ class MusicDownloader:
         org: Optional[str],
         sub_org: Optional[str],
         channel_name: str,
+        channel_id: str,
         topic: str,
         title: str
     ) -> Path:
@@ -62,24 +76,15 @@ class MusicDownloader:
         Returns:
             Path object for the output file
         """
-        # Sanitize names for filesystem
-        def sanitize(name: str) -> str:
-            if not name:
-                return "Unknown"
-            # Remove/replace invalid filesystem characters
-            invalid_chars = '<>:"/\\|?*'
-            for char in invalid_chars:
-                name = name.replace(char, '_')
-            return name.strip()
         
         parts = [self.base_output_dir]
         
         if org:
-            parts.append(sanitize(org))
+            parts.append(fs_sanitize(org))
         if sub_org:
-            parts.append(sanitize(sub_org))
+            parts.append(fs_sanitize(sub_org))
         
-        parts.append(sanitize(channel_name))
+        parts.append(fs_sanitize(f"{channel_name}_{channel_id}"))
         
         # Covers or Originals folder
         if topic == "Music_Cover":
@@ -93,7 +98,7 @@ class MusicDownloader:
         output_dir.mkdir(parents=True, exist_ok=True)
         
         # Sanitize title for filename
-        safe_title = sanitize(title)
+        safe_title = fs_sanitize(title)
         # Limit filename length (filesystem limit)
         if len(safe_title) > 200:
             safe_title = safe_title[:200]
@@ -106,6 +111,7 @@ class MusicDownloader:
         org: Optional[str],
         sub_org: Optional[str],
         channel_name: str,
+        channel_id : str,
         topic: str,
         title: str
     ) -> DownloadResult:
@@ -131,33 +137,21 @@ class MusicDownloader:
         
         url = f"https://www.youtube.com/watch?v={video_id}"
         
-        # Build yt-dlp command
-        cmd = [
-            "yt-dlp",
-            "--extract-audio",
-            "--audio-format", "mp3",
-            "--embed-metadata",
-            "--parse-metadata", "playlist_index:%(track_number)s",
-            "--add-metadata",
-            "-o", str(output_path),
-            url
-        ]
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": str(output_path),
+            "postprocessors": [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3"},
+                {"key": "EmbedMetadata"},
+            ],
+            "parse_metadata": ["playlist_index:%(track_number)s"],
+        }
         
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                check=True
-            )
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
             return DownloadResult(success=True, file_path=output_path)
-        except subprocess.CalledProcessError as e:
-            return DownloadResult(
-                success=False,
-                error=f"yt-dlp error: {e.stderr}"
-            )
-        except FileNotFoundError:
-            return DownloadResult(
-                success=False,
-                error="yt-dlp not found in PATH. Please install yt-dlp."
-            )
+        except yt_dlp.utils.DownloadError as e:
+            return DownloadResult(success=False, error=f"yt-dlp error: {e}")
+        except Exception as e:
+            return DownloadResult(success=False, error=f"yt-dlp error: {e}")

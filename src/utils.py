@@ -12,6 +12,8 @@ from typing import Optional
 logger = get_logger(__name__)
 
 # TODO: verify that current upsert logic in process_video() can remain unchanged
+# TODO: add channel ID to folder name for existing channels
+# TODO: sub_org = sub_org[2:] if len(sub_org) > 2 else sub_org for existing + logic to cleanly merge multiple folders that end up with the same name
 
 def check_file_exists(file_path: Path) -> bool:
     """Check if file exists and is not deleted."""
@@ -155,3 +157,15 @@ def process_video(
     
     logger.info(f"✓ Processed: {video.title}")
     return True
+
+def sanitize_suborg(sub_org: str) -> str:
+    return sub_org[2:] if len(sub_org) > 2 else sub_org
+
+def fs_sanitize(name: str) -> str:
+    '''sanitize for file system'''
+    if not name:
+        return "Unknown"
+    invalid_chars = '<>:"/\\|?*'
+    for char in invalid_chars:
+        name = name.replace(char, '_')
+    return name.strip()

@@ -1,3 +1,7 @@
 [Paths]
 download_folder = '~/Music/'
 database_path = './db/'
+
+[Keys]
+holodex_key = ""
+youtube_PO_token = ""
