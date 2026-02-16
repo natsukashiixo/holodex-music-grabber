@@ -1,4 +1,5 @@
 """Downloader module using yt-dlp."""
+import shutil
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass
@@ -6,19 +7,13 @@ from dataclasses import dataclass
 import yt_dlp
 
 from src.logging_config import get_logger
-from src.utils import fs_sanitize
+from src.path_utils import fs_sanitize
 
 logger = get_logger(__name__)
 
-# TODO: log if video is membersonly and store in db. if no file hash + true then skip
-# TODO: log if video is privated/deleted. if no file hash + true then skip
-# TODO: download into cache folder then move to target?
-# TODO: leverage yt-dlp built in concurrency
-# TODO: use yt-dlp to grab captions (separate function)
-# TODO: implement SABR+PO_Token
+# TODO: 2026-02-16 12:02:25 [ERROR   ] src.utils: Download failed: ERROR: [youtube] F-3M_aotvcE: Video unavailable. This video contains content from Sony Music Entertainment (Japan) Inc., who has blocked it in your country on copyright grounds
+# TODO: implement total count + current download nr in the --retry thing
 
-FAKE_MULTILINE_COMMENT = """
-WARNING: [youtube] mUudSg8Cs4I: Some web_safari client https formats have been skipped as they are missing a url. YouTube is forcing SABR streaming for this client. See  https://github.com/yt-dlp/yt-dlp/issues/12482  for more details"""
 
 @dataclass
 class DownloadResult:
@@ -30,7 +25,7 @@ class DownloadResult:
     def members_only(self) -> bool:
         return bool(
             self.error
-            and "This video is available to this channel's members" in self.error
+            and "This video is available to this channel's members" or "members-only content like this video" in self.error
         )
 
     @property
@@ -46,13 +41,57 @@ class DownloadResult:
             self.error
             and "Video unavailable. This video has been removed by the uploader" in self.error
         )
+    
+    @property
+    def georestricted(self) -> bool:
+        return bool(
+            self.error
+            and "who has blocked it in your country on copyright grounds" in self.error
+        )
 
 class MusicDownloader:
-    """Downloader for music using yt-dlp."""
-    
-    def __init__(self, base_output_dir: Path = Path("Music")):
+    """Downloader for music using yt-dlp.
+    Uses a single yt-dlp instance (session reuse); downloads to cache then moves to target.
+    Concurrency: one download at a time; yt-dlp can do parallel fetches internally if needed."""
+
+    def __init__(
+        self,
+        base_output_dir: Path = Path("Music"),
+        cache_dir: Path = Path("cache"),
+        po_token: Optional[str] = None,
+    ):
         self.base_output_dir = base_output_dir
+        self.cache_dir = cache_dir
         self.base_output_dir.mkdir(parents=True, exist_ok=True)
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        # Build opts once; download to cache then move so outtmpl is fixed per session
+        opts = {
+            "format": "bestaudio/best",
+            "outtmpl": str(self.cache_dir / "%(id)s.%(ext)s"),
+            "postprocessors": [
+                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3"},
+                {"key": "FFmpegMetadata"},
+            ],
+            "parse_metadata": ["playlist_index:%(track_number)s"],
+            #"cookiesfrombrowser": ('firefox',),
+            #"verbose": True,
+            "remote-components": "ejs:github"
+        }
+        if po_token and po_token.strip():
+            opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["default", "mweb"],
+                    "po_token": [f"mweb.gvs+{po_token.strip()}"],
+                }
+            }
+            logger.debug("Using YouTube PO token for GVS (SABR)")
+        else:
+            opts["extractor_args"] = {
+                "youtube": {
+                    "player_client": ["default", "mweb"],
+                }
+            }
+        self._ydl = yt_dlp.YoutubeDL(opts)
     
     def _get_output_path(
         self,
@@ -84,6 +123,7 @@ class MusicDownloader:
         if sub_org:
             parts.append(fs_sanitize(sub_org))
         
+        # Channel folder always includes channel_id so same-name channels don't collide
         parts.append(fs_sanitize(f"{channel_name}_{channel_id}"))
         
         # Covers or Originals folder
@@ -129,29 +169,31 @@ class MusicDownloader:
         Returns:
             DownloadResult with success status and file path
         """
-        output_path = self._get_output_path(org, sub_org, channel_name, topic, title)
-        
+        output_path = self._get_output_path(org, sub_org, channel_name, channel_id, topic, title)
+
         # If file already exists, skip download
         if output_path.exists():
             return DownloadResult(success=True, file_path=output_path)
-        
+
         url = f"https://www.youtube.com/watch?v={video_id}"
-        
-        opts = {
-            "format": "bestaudio/best",
-            "outtmpl": str(output_path),
-            "postprocessors": [
-                {"key": "FFmpegExtractAudio", "preferredcodec": "mp3"},
-                {"key": "EmbedMetadata"},
-            ],
-            "parse_metadata": ["playlist_index:%(track_number)s"],
-        }
-        
+
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
-            return DownloadResult(success=True, file_path=output_path)
+            self._ydl.download([url])
         except yt_dlp.utils.DownloadError as e:
-            return DownloadResult(success=False, error=f"yt-dlp error: {e}")
+            return DownloadResult(success=False, error=str(e))
         except Exception as e:
             return DownloadResult(success=False, error=f"yt-dlp error: {e}")
+
+        # File lands in cache as video_id.mp3 (postprocessor outputs mp3)
+        cache_file = self.cache_dir / f"{video_id}.mp3"
+        if not cache_file.exists():
+            # Fallback: any video_id.* in cache (e.g. different ext before postprocessor)
+            candidates = list(self.cache_dir.glob(f"{video_id}.*"))
+            cache_file = candidates[0] if candidates else None
+        if not cache_file or not cache_file.exists():
+            return DownloadResult(success=False, error="Download completed but cache file not found")
+
+        # Move to target (atomic on same filesystem)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(cache_file), str(output_path))
+        return DownloadResult(success=True, file_path=output_path)
