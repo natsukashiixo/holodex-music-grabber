@@ -7,13 +7,26 @@ from src.db import Database, Channel, Song, hash_file
 from src.holodex import HolodexVideo, HolodexClient
 from src.downloader import MusicDownloader
 from src.logging_config import get_logger
+from src.path_utils import sanitize_suborg
 from typing import Optional
 
 logger = get_logger(__name__)
 
-# TODO: verify that current upsert logic in process_video() can remain unchanged
-# TODO: add channel ID to folder name for existing channels
-# TODO: sub_org = sub_org[2:] if len(sub_org) > 2 else sub_org for existing + logic to cleanly merge multiple folders that end up with the same name
+def song_to_holodex_video(song: Song, db: Database) -> HolodexVideo:
+    """Build a HolodexVideo from a DB Song (e.g. for --retry-failed). Fills channel name/org/sub_org from DB."""
+    ch = db.get_channel(song.channel_id)
+    return HolodexVideo(
+        video_id=song.video_id,
+        channel_id=song.channel_id,
+        title=song.title,
+        topic=song.topic,
+        available_at=song.available_at,
+        channel_name=ch.name if ch else None,
+        org=ch.org if ch else None,
+        sub_org=ch.sub_org if ch else None,
+        duration=song.duration,
+    )
+
 
 def check_file_exists(file_path: Path) -> bool:
     """Check if file exists and is not deleted."""
@@ -49,9 +62,9 @@ def process_video(
         True if successfully processed, False otherwise
     """
     # Check if already successfully processed (has file_hash)
-    if skip_existing:
-        existing = db.get_song(video.video_id)
-        if existing and existing.file_hash:
+    existing = db.get_song(video.video_id) if skip_existing else None
+    if skip_existing and existing:
+        if existing.file_hash:
             # Verify file still exists
             if existing.file_path and check_file_exists(downloader.base_output_dir / existing.file_path):
                 logger.debug(f"Already exists: {video.title} ({video.video_id})")
@@ -59,6 +72,10 @@ def process_video(
             # File missing but hash exists - mark as deleted and retry
             logger.warning(f"File missing for {video.title}, will retry download")
             db.mark_deleted(video.video_id)
+        elif existing.members_only or existing.privated or existing.deleted:
+            # Already known unavailable; don't retry
+            logger.debug(f"Skipping (members-only/privated/deleted): {video.title} ({video.video_id})")
+            return True
     
     # Get channel info from DB or query API if needed
     # Note: /videos endpoint doesn't include channel details (org/suborg), so we need to query separately
@@ -77,6 +94,10 @@ def process_video(
         except Exception as e:
             logger.debug(f"Could not query channel info for {video.channel_id}: {e}")
     
+    # Only sanitize when value came from raw API (video.sub_org), so we never double-sanitize
+    if sub_org and sub_org == video.sub_org:
+        sub_org = sanitize_suborg(sub_org)
+    
     # Update channel info in DB
     channel = Channel(
         channel_id=video.channel_id,
@@ -93,15 +114,21 @@ def process_video(
         org=org,
         sub_org=sub_org,
         channel_name=channel_name,
+        channel_id=video.channel_id,
         topic=video.topic,
         title=video.title
     )
     
     # Always add/update song in DB, even on failure (with NULL file_hash)
-    # This allows cron to pick up where it left off
+    # This allows cron to pick up where it left off; store members_only/privated/deleted so we skip retries
     if not result.success:
         logger.error(f"Download failed: {result.error}")
-        # Add to DB with NULL file_hash so we can retry later
+        if result.members_only:
+            logger.info(f"  -> members-only: {video.video_id}")
+        if result.privated:
+            logger.info(f"  -> privated: {video.video_id}")
+        if result.deleted:
+            logger.info(f"  -> deleted: {video.video_id}")
         song = Song(
             video_id=video.video_id,
             channel_id=video.channel_id,
@@ -109,14 +136,17 @@ def process_video(
             topic=video.topic,
             available_at=video.available_at,
             file_hash=None,
-            file_path=None
+            file_path=None,
+            members_only=result.members_only,
+            privated=result.privated,
+            deleted=result.deleted,
+            error=result.error,
         )
         db.add_song(song)
         return False
     
     if not result.file_path or not result.file_path.exists():
         logger.error(f"Download completed but file not found: {video.title}")
-        # Add to DB with NULL file_hash so we can retry later
         song = Song(
             video_id=video.video_id,
             channel_id=video.channel_id,
@@ -124,7 +154,7 @@ def process_video(
             topic=video.topic,
             available_at=video.available_at,
             file_hash=None,
-            file_path=None
+            file_path=None,
         )
         db.add_song(song)
         return False
@@ -157,15 +187,3 @@ def process_video(
     
     logger.info(f"✓ Processed: {video.title}")
     return True
-
-def sanitize_suborg(sub_org: str) -> str:
-    return sub_org[2:] if len(sub_org) > 2 else sub_org
-
-def fs_sanitize(name: str) -> str:
-    '''sanitize for file system'''
-    if not name:
-        return "Unknown"
-    invalid_chars = '<>:"/\\|?*'
-    for char in invalid_chars:
-        name = name.replace(char, '_')
-    return name.strip()
