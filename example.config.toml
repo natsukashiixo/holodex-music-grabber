@@ -1,6 +1,7 @@
 [Paths]
 download_folder = '~/Music/'
 database_path = './db/'
+cache_folder = ''
 
 [Keys]
 holodex_key = ""
