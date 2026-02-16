@@ -1,14 +1,20 @@
 """Database module for tracking songs, channels, orgs, and file hashes."""
+
 import sqlite3
+import threading
 import hashlib
 from pathlib import Path
-from typing import Optional, Dict, List, Tuple
+from typing import Optional, Dict, List
 from dataclasses import dataclass
+from contextlib import contextmanager
 
+
+# =========================
+# Models
+# =========================
 
 @dataclass
 class Channel:
-    """Channel information."""
     channel_id: str
     name: str
     org: Optional[str] = None
@@ -17,223 +23,276 @@ class Channel:
 
 @dataclass
 class Song:
-    """Song information."""
     video_id: str
     channel_id: str
     title: str
-    topic: str  # "Music_Cover" or "Original_Song"
+    topic: str
     available_at: str
     file_hash: Optional[str] = None
     file_path: Optional[str] = None
     deleted: bool = False
+    members_only: bool = False
+    privated: bool = False
+    error: Optional[str] = None
+    duration: Optional[int] = None
 
+
+# =========================
+# Database
+# =========================
 
 class Database:
     """SQLite database for tracking music downloads."""
-    
+
     def __init__(self, db_path: str = "music.db"):
         self.db_path = db_path
+        self._local = threading.local()
+        self._song_queue: List[Song] = []
+        self._channel_queue: List[Channel] = []
         self._init_db()
-    
+
+    # ---------- Connection handling ----------
+
+    def _get_connection(self) -> sqlite3.Connection:
+        if not hasattr(self._local, "conn"):
+            conn = sqlite3.connect(
+                self.db_path,
+                timeout=30,
+                check_same_thread=False,
+            )
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            self._local.conn = conn
+        return self._local.conn
+
+    @contextmanager
+    def cursor(self):
+        conn = self._get_connection()
+        cur = conn.cursor()
+        try:
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    # ---------- Schema ----------
+
     def _init_db(self):
-        """Initialize database schema."""
-        # Create parent directory if it doesn't exist
-        db_path_obj = Path(self.db_path)
-        if db_path_obj.parent != db_path_obj:  # Not root directory
-            db_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Channels table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS channels (
-                channel_id TEXT PRIMARY KEY,
-                name TEXT,
-                english_name TEXT,
-                org TEXT,
-                sub_org TEXT
-            )
-        """)
-        
-        # Songs table
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS songs (
-                video_id TEXT PRIMARY KEY,
-                channel_id TEXT NOT NULL,
-                title TEXT NOT NULL,
-                topic TEXT NOT NULL,
-                available_at TEXT NOT NULL,
-                file_hash TEXT,
-                file_path TEXT,
-                deleted INTEGER DEFAULT 0,
-                FOREIGN KEY (channel_id) REFERENCES channels(channel_id)
-            )
-        """)
-        
-        # File hash index for fast deduplication lookups
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_file_hash ON songs(file_hash)
-        """)
-        
-        # Channel index
-        cursor.execute("""
-            CREATE INDEX IF NOT EXISTS idx_channel_id ON songs(channel_id)
-        """)
-        
-        conn.commit()
-        conn.close()
-    
-    def upsert_channel(self, channel: Channel):
-        """Insert or update channel information."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO channels (channel_id, name, org, sub_org)
-            VALUES (?, ?, ?, ?)
-        """, (channel.channel_id, channel.name, channel.org, channel.sub_org))
-        conn.commit()
-        conn.close()
-    
+        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+
+        with self.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS channels (
+                    channel_id TEXT PRIMARY KEY,
+                    name TEXT,
+                    english_name TEXT,
+                    org TEXT,
+                    sub_org TEXT
+                )
+            """)
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS songs (
+                    video_id TEXT PRIMARY KEY,
+                    channel_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    available_at TEXT NOT NULL,
+                    file_hash TEXT,
+                    file_path TEXT,
+                    deleted INTEGER DEFAULT 0,
+                    members_only INTEGER DEFAULT 0,
+                    privated INTEGER DEFAULT 0,
+                    error TEXT,
+                    duration INTEGER,
+                    FOREIGN KEY (channel_id) REFERENCES channels(channel_id)
+                )
+            """)
+
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_file_hash ON songs(file_hash)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_channel_id ON songs(channel_id)")
+
+    # ---------- Channels ----------
+
+    def upsert_channel(self, channel: Channel, queue: bool = False):
+        if queue:
+            self._channel_queue.append(channel)
+            return
+
+        with self.cursor() as cur:
+            cur.execute("""
+                INSERT OR REPLACE INTO channels (channel_id, name, org, sub_org)
+                VALUES (?, ?, ?, ?)
+            """, (channel.channel_id, channel.name, channel.org, channel.sub_org))
+
     def get_channel(self, channel_id: str) -> Optional[Channel]:
-        """Get channel by ID."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT channel_id, name, org, sub_org
-            FROM channels
-            WHERE channel_id = ?
-        """, (channel_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return Channel(*row)
-        return None
+        with self.cursor() as cur:
+            cur.execute("""
+                SELECT channel_id, name, org, sub_org
+                FROM channels
+                WHERE channel_id = ?
+            """, (channel_id,))
+            row = cur.fetchone()
+            return Channel(**row) if row else None
+
+    def normalize_channel_sub_orgs(self) -> int:
+        with self.cursor() as cur:
+            cur.execute("""
+                UPDATE channels
+                SET sub_org = substr(sub_org, 3)
+                WHERE sub_org IS NOT NULL AND length(sub_org) > 2
+            """)
+            return cur.rowcount
+
+    # ---------- Songs ----------
 
     def song_exists(self, video_id: str) -> bool:
-        """Check if song already exists in database."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1 FROM songs WHERE video_id = ?", (video_id,))
-        exists = cursor.fetchone() is not None
-        conn.close()
-        return exists
-    
+        with self.cursor() as cur:
+            cur.execute("SELECT 1 FROM songs WHERE video_id = ?", (video_id,))
+            return cur.fetchone() is not None
+
     def hash_exists(self, file_hash: str) -> Optional[str]:
-        """Check if file hash already exists. Returns video_id if found."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT video_id FROM songs
-            WHERE file_hash = ? AND deleted = 0
-            LIMIT 1
-        """, (file_hash,))
-        row = cursor.fetchone()
-        conn.close()
-        return row[0] if row else None
-    
-    def add_song(self, song: Song):
-        """Add song to database."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO songs 
-            (video_id, channel_id, title, topic, available_at, file_hash, file_path, deleted)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            song.video_id,
-            song.channel_id,
-            song.title,
-            song.topic,
-            song.available_at,
-            song.file_hash,
-            song.file_path,
-            1 if song.deleted else 0
-        ))
-        conn.commit()
-        conn.close()
-    
+        with self.cursor() as cur:
+            cur.execute("""
+                SELECT video_id
+                FROM songs
+                WHERE file_hash = ? AND deleted = 0
+                LIMIT 1
+            """, (file_hash,))
+            row = cur.fetchone()
+            return row["video_id"] if row else None
+
+    def add_song(self, song: Song, queue: bool = False):
+        if queue:
+            self._song_queue.append(song)
+            return
+        self._insert_song(song)
+
+    def _insert_song(self, song: Song):
+        with self.cursor() as cur:
+            cur.execute("""
+                INSERT OR REPLACE INTO songs (
+                    video_id, channel_id, title, topic, available_at,
+                    file_hash, file_path, deleted,
+                    members_only, privated, error, duration
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                song.video_id,
+                song.channel_id,
+                song.title,
+                song.topic,
+                song.available_at,
+                song.file_hash,
+                song.file_path,
+                int(song.deleted),
+                int(song.members_only),
+                int(song.privated),
+                song.error,
+                song.duration,
+            ))
+
+    def flush(self):
+        if not self._channel_queue and not self._song_queue:
+            return
+
+        with self.cursor() as cur:
+            if self._channel_queue:
+                cur.executemany("""
+                    INSERT OR REPLACE INTO channels (channel_id, name, org, sub_org)
+                    VALUES (?, ?, ?, ?)
+                """, [
+                    (c.channel_id, c.name, c.org, c.sub_org)
+                    for c in self._channel_queue
+                ])
+                self._channel_queue.clear()
+
+            if self._song_queue:
+                cur.executemany("""
+                    INSERT OR REPLACE INTO songs (
+                        video_id, channel_id, title, topic, available_at,
+                        file_hash, file_path, deleted,
+                        members_only, privated, error, duration
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [
+                    (
+                        s.video_id, s.channel_id, s.title, s.topic, s.available_at,
+                        s.file_hash, s.file_path,
+                        int(s.deleted), int(s.members_only), int(s.privated),
+                        s.error, s.duration
+                    )
+                    for s in self._song_queue
+                ])
+                self._song_queue.clear()
+
     def mark_deleted(self, video_id: str):
-        """Mark a song as deleted."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            UPDATE songs SET deleted = 1
-            WHERE video_id = ?
-        """, (video_id,))
-        conn.commit()
-        conn.close()
-    
-    def get_song(self, video_id: str) -> Optional[Song]:
-        """Get song by video ID."""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT video_id, channel_id, title, topic, available_at, 
-                   file_hash, file_path, deleted
-            FROM songs
-            WHERE video_id = ?
-        """, (video_id,))
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return Song(
-                video_id=row[0],
-                channel_id=row[1],
-                title=row[2],
-                topic=row[3],
-                available_at=row[4],
-                file_hash=row[5],
-                file_path=row[6],
-                deleted=bool(row[7])
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE songs SET deleted = 1 WHERE video_id = ?",
+                (video_id,),
             )
-        return None
-    
+
+    def get_song(self, video_id: str) -> Optional[Song]:
+        with self.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM songs
+                WHERE video_id = ?
+            """, (video_id,))
+            row = cur.fetchone()
+            return Song(**row) if row else None
+
     def get_latest_available_at_per_topic(self) -> Dict[str, Optional[tuple[str, str]]]:
-        """
-        Get the latest available_at timestamp and video_id for each topic.
-        
-        Returns:
-            Dictionary mapping topic to tuple of (video_id, available_at timestamp),
-            or None if no entries exist for that topic
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        # Get one video_id with the maximum available_at for each topic
-        # Use MIN(video_id) to deterministically pick one if multiple have same timestamp
-        cursor.execute("""
-            SELECT topic, MIN(video_id) as video_id, MAX(available_at) as available_at
-            FROM songs
-            WHERE deleted = 0
-            AND (topic, available_at) IN (
-                SELECT topic, MAX(available_at)
+        with self.cursor() as cur:
+            cur.execute("""
+                SELECT topic, video_id, available_at
                 FROM songs
                 WHERE deleted = 0
-                GROUP BY topic
-            )
-            GROUP BY topic
-        """)
-        rows = cursor.fetchall()
-        conn.close()
-        
-        result = {}
-        for topic, video_id, available_at in rows:
-            result[topic] = (video_id, available_at)
-        
-        # Ensure both topics are in the result
-        for topic in ["Music_Cover", "Original_Song"]:
-            if topic not in result:
-                result[topic] = None
-        
+                AND (topic, available_at) IN (
+                    SELECT topic, MAX(available_at)
+                    FROM songs
+                    WHERE deleted = 0
+                    GROUP BY topic
+                )
+            """)
+            rows = cur.fetchall()
+
+        result = {r["topic"]: (r["video_id"], r["available_at"]) for r in rows}
+        for topic in ("Music_Cover", "Original_Song"):
+            result.setdefault(topic, None)
         return result
 
+    def get_songs_without_file_hash(self, exclude_unavailable: bool = True) -> List[Song]:
+        where = "file_hash IS NULL"
+        if exclude_unavailable:
+            where += """
+                AND (members_only = 0 OR members_only IS NULL)
+                AND (privated = 0 OR privated IS NULL)
+                AND (deleted = 0 OR deleted IS NULL)
+            """
+
+        with self.cursor() as cur:
+            cur.execute(f"""
+                SELECT *
+                FROM songs
+                WHERE {where}
+                ORDER BY available_at DESC
+            """)
+            return [Song(**row) for row in cur.fetchall()]
+
+
+# =========================
+# Utils
+# =========================
 
 def hash_file(file_path: Path) -> str:
-    """Calculate SHA256 hash of a file."""
-    sha256 = hashlib.sha256()
-    with open(file_path, 'rb') as f:
-        for chunk in iter(lambda: f.read(4096), b''):
-            sha256.update(chunk)
-    return sha256.hexdigest()
+    sha = hashlib.sha256()
+    with file_path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            sha.update(chunk)
+    return sha.hexdigest()
