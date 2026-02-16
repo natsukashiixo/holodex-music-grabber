@@ -8,7 +8,7 @@ import logging
 from src.db import Database
 from src.holodex import HolodexClient
 from src.downloader import MusicDownloader
-from src.utils import check_file_exists, verify_existing_files, process_video
+from src.utils import check_file_exists, verify_existing_files, process_video, song_to_holodex_video
 from src.logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
@@ -53,23 +53,30 @@ def main():
     
     # Load config file
     config = load_config()
-    
+
     # Set defaults from config or fallback values
     default_output_dir = Path("Music")
     default_db_path = "music.db"
-    
-    if config and "Paths" in config:
-        paths = config["Paths"]
-        if "download_folder" in paths:
-            default_output_dir = expand_path(paths["download_folder"])
-        if "database_path" in paths:
-            db_path_str = paths["database_path"]
-            # If it's a directory, append music.db, otherwise use as-is
-            db_path_expanded = expand_path(db_path_str)
-            if db_path_expanded.is_dir() or db_path_str.endswith("/"):
-                default_db_path = str(db_path_expanded / "music.db")
-            else:
-                default_db_path = str(db_path_expanded)
+    default_cache_dir = Path("/tmp/holodex-music-grabber-cache")
+    default_cache_dir.mkdir(parents=True, exist_ok=True)
+    po_token = None
+    if config:
+        if "Paths" in config:
+            paths = config["Paths"]
+            if "download_folder" in paths:
+                default_output_dir = expand_path(paths["download_folder"])
+            if "database_path" in paths:
+                db_path_str = paths["database_path"]
+                db_path_expanded = expand_path(db_path_str)
+                if db_path_expanded.is_dir() or db_path_str.endswith("/"):
+                    default_db_path = str(db_path_expanded / "music.db")
+                else:
+                    default_db_path = str(db_path_expanded)
+            if "cache_folder" in paths and paths["cache_folder"]:
+                default_cache_dir = expand_path(paths["cache_folder"])
+                default_cache_dir.mkdir(parents=True, exist_ok=True)
+        if "Keys" in config and config["Keys"].get("youtube_PO_token"):
+            po_token = config["Keys"]["youtube_PO_token"]
     
     parser = argparse.ArgumentParser(
         description="Download VTuber music from Holodex using yt-dlp"
@@ -101,32 +108,40 @@ def main():
         default=True,
         help="Skip videos that are already in database (default: True)"
     )
-    
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Only process rows where file_hash IS NULL (retry failed/unfinished downloads); no API fetch"
+    )
     args = parser.parse_args()
-    
+
     # Initialize components
     db = Database(args.db_path)
     client = HolodexClient(api_key=args.api_key)
-    downloader = MusicDownloader(base_output_dir=args.output_dir)
-    
+    downloader = MusicDownloader(
+        base_output_dir=args.output_dir,
+        cache_dir=default_cache_dir
+    )
+
     try:
-        # Verify existing files if requested
         if args.verify_files:
             logger.info("Verifying existing files...")
             verify_existing_files(db, downloader.base_output_dir)
-        
-        # Get all music videos
-        logger.info("Fetching videos from Holodex...")
-        videos = client.get_all_music_videos(db=db)
-        
-        logger.info(f"Found {len(videos)} music videos")
-        
-        # Process each video
+
+        if args.retry_failed:
+            songs = db.get_songs_without_file_hash(exclude_unavailable=True)
+            videos = [song_to_holodex_video(s, db) for s in songs]
+            logger.info(f"Retrying {len(videos)} videos with no file_hash (excluding members-only/privated/deleted)")
+        else:
+            logger.info("Fetching videos from Holodex...")
+            videos = client.get_all_music_videos(db=db)
+
         success_count = 0
         fail_count = 0
-        
         for i, video in enumerate(videos, 1):
-            logger.info(f"[{i}/{len(videos)}] Processing: {video.title}")
+            if i == 1 and not args.retry_failed:
+                logger.info("Processing videos (streaming from API)...")
+            logger.info(f"[{i}] Processing: {video.title}")
             if process_video(video, db, downloader, skip_existing=args.skip_existing, client=client):
                 success_count += 1
             else:
