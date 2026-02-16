@@ -1,21 +1,18 @@
 """Holodex API client for querying videos."""
 import httpx
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Iterator, Tuple, Any
 from dataclasses import dataclass
 import logging
 import time
 
-from src.db import Database
+from src.db import Database, Song, Channel
 from src.logging_config import get_logger
-from src.utils import sanitize_suborg
+from src.path_utils import sanitize_suborg
 
 logger = get_logger(__name__)
 
-# TODO: Implement a write queue into db
-# TODO: Double check if we store entire query in memory or not because if we do thats bad
-# TODO: response caching
-# TODO: move initial database adds to get_all_music_videos()
-# TODO: create function that only stores responses where "topic_id" key is missing. Store duration + title + other stuff needed to run confidence algo
+# Response cache TTL in seconds (5 minutes)
+CACHE_TTL_SECONDS = 300
 
 class RateLimiter:
     """Rate limiter to control API request frequency."""
@@ -50,6 +47,7 @@ class HolodexVideo:
     channel_name: Optional[str] = None
     org: Optional[str] = None
     sub_org: Optional[str] = None
+    duration: Optional[int] = None # seconds
 
 @dataclass
 class HolodexChannel:
@@ -70,8 +68,10 @@ class HolodexClient:
     BASE_URL = "https://holodex.net/api/v2"
     RATE_LIMIT_SECONDS = 2.0
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, cache_ttl_seconds: float = CACHE_TTL_SECONDS):
         self.api_key = api_key
+        self.cache_ttl = cache_ttl_seconds
+        self._cache: Dict[Tuple[str, ...], Tuple[float, Any]] = {}  # (key) -> (expiry_ts, value)
         self.client = httpx.Client(
             base_url=self.BASE_URL,
             headers={"X-APIKEY": api_key} if api_key else {},
@@ -79,6 +79,18 @@ class HolodexClient:
         )
         # Initialize rate limiter (1 request per RATE_LIMIT_SECONDS)
         self.rate_limiter = RateLimiter(rate_per_sec=1.0 / self.RATE_LIMIT_SECONDS)
+    
+    def _cache_get(self, key: Tuple[str, ...]) -> Optional[Any]:
+        now = time.monotonic()
+        if key in self._cache:
+            expiry, value = self._cache[key]
+            if now < expiry:
+                return value
+            del self._cache[key]
+        return None
+    
+    def _cache_set(self, key: Tuple[str, ...], value: Any) -> None:
+        self._cache[key] = (time.monotonic() + self.cache_ttl, value)
     
     def query_videos(
         self,
@@ -119,6 +131,11 @@ class HolodexClient:
             params["org"] = org
         if from_date:
             params["from"] = from_date
+        
+        cache_key = ("videos", str(params.get("topic")), str(params.get("limit")), str(params.get("offset")), str(params.get("from", "")))
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
         
         # Rate limit API call
         self.rate_limiter.wait()
@@ -169,86 +186,114 @@ class HolodexClient:
                     channel_name=channel_info.get("name"),
                     org=channel_info.get("org"),
                     sub_org=channel_info.get("suborg"),
+                    duration=item.get("duration"),
                 )
                 videos.append(video)
         
+        self._cache_set(cache_key, videos)
         return videos
     
     def get_all_music_videos(
         self,
         db: Optional['Database'] = None  # type: ignore
-    ) -> List[HolodexVideo]:
+    ) -> Iterator[HolodexVideo]:
         """
         Get all music videos (covers and originals) since last check.
         Uses topic-based queries with timestamp filtering for efficiency.
+        Yields videos one-by-one and queues initial partial song/channel rows to db
+        so we do not hold the full result set in memory.
         
         Args:
-            db: Database instance to get latest timestamps per topic
+            db: Database instance for latest timestamps and to queue initial partial rows
         
-        Returns:
-            List of all music videos (deduplicated by video_id)
+        Yields:
+            HolodexVideo (deduplicated by video_id)
         """
-        all_videos = []
-        seen_video_ids = set()
+        seen_video_ids: set = set()
         
         # Get latest timestamps and video_ids per topic from database
         latest_per_topic = {}
         if db:
             latest_per_topic = db.get_latest_available_at_per_topic()
         
-        # Query each topic separately
-        for topic in ["Music_Cover", "Original_Song"]:
-            latest_info = latest_per_topic.get(topic) if latest_per_topic else None
-            from_date = None
-            stop_video_id = None
-            
-            if latest_info:
-                stop_video_id, from_date = latest_info
-                logger.debug(f"Querying {topic} from {from_date}, stopping at {stop_video_id}")
-            else:
-                logger.debug(f"Querying all {topic} videos (no previous entries)")
-            
-            offset = 0
-            while True:
-                videos = self.query_videos(
-                    topic=topic,
-                    limit=50,
-                    offset=offset,
-                    from_date=from_date
-                )
-                if not videos:
-                    break
+        try:
+            for topic in ["Music_Cover", "Original_Song"]:
+                latest_info = latest_per_topic.get(topic) if latest_per_topic else None
+                from_date = None
+                stop_video_id = None
                 
-                logger.debug(f"Retrieved {len(videos)} {topic} videos (offset: {offset})")
+                if latest_info:
+                    stop_video_id, from_date = latest_info
+                    logger.debug(f"Querying {topic} from {from_date}, stopping at {stop_video_id}")
+                else:
+                    logger.debug(f"Querying all {topic} videos (no previous entries)")
                 
-                # Process videos and check if we've reached the stop point
-                found_stop_video = False
-                for video in videos:
-                    # If we encounter the video_id we used for the latest timestamp, stop
-                    if stop_video_id and video.video_id == stop_video_id:
-                        found_stop_video = True
-                        logger.debug(f"Reached stop video {stop_video_id} for {topic}")
+                offset = 0
+                while True:
+                    videos = self.query_videos(
+                        topic=topic,
+                        limit=50,
+                        offset=offset,
+                        from_date=from_date
+                    )
+                    if not videos:
                         break
                     
-                    # Deduplicate by video_id
-                    if video.video_id not in seen_video_ids:
-                        seen_video_ids.add(video.video_id)
-                        all_videos.append(video)
-                
-                # Break out of outer loop if we hit the stop video_id
-                if found_stop_video:
-                    break
-                
-                # Continue pagination if we haven't reached the stop point
-                if len(videos) < 50:
-                    break
-                offset += 50
-        
-        return all_videos
+                    logger.debug(f"Retrieved {len(videos)} {topic} videos (offset: {offset})")
+                    
+                    found_stop_video = False
+                    # Queue partial rows for this page, then flush before yielding so process_video overwrites with full data
+                    page_to_yield: List[HolodexVideo] = []
+                    for video in videos:
+                        if stop_video_id and video.video_id == stop_video_id:
+                            found_stop_video = True
+                            logger.debug(f"Reached stop video {stop_video_id} for {topic}")
+                            break
+                        
+                        if video.video_id not in seen_video_ids:
+                            seen_video_ids.add(video.video_id)
+                            if db:
+                                song = Song(
+                                    video_id=video.video_id,
+                                    channel_id=video.channel_id,
+                                    title=video.title,
+                                    topic=video.topic,
+                                    available_at=video.available_at,
+                                    file_hash=None,
+                                    file_path=None,
+                                    duration=video.duration,
+                                )
+                                db.add_song(song, queue=True)
+                                channel_name = video.channel_name or "Unknown"
+                                channel = Channel(
+                                    channel_id=video.channel_id,
+                                    name=channel_name,
+                                    org=video.org,
+                                    sub_org=video.sub_org,
+                                )
+                                db.upsert_channel(channel, queue=True)
+                            page_to_yield.append(video)
+                    if db:
+                        db.flush()
+                    for v in page_to_yield:
+                        yield v
+                    if found_stop_video:
+                        break
+                    if len(videos) < 50:
+                        break
+                    offset += 50
+        finally:
+            if db:
+                db.flush()
     
     def query_channel(self, channel_id: str) -> HolodexChannel:
         '''Queries channel endpoint using channel_id
         Returns HolodexChannel dataclass'''
+        cache_key = ("channel", channel_id)
+        cached = self._cache_get(cache_key)
+        if cached is not None:
+            return cached
+        
         # Rate limit API call
         self.rate_limiter.wait()
         
@@ -256,13 +301,15 @@ class HolodexClient:
             response = self.client.get(f"/channels/{channel_id}")
             response.raise_for_status()
             data = response.json()
-            return HolodexChannel(
+            channel = HolodexChannel(
                 channel_id=data["id"],
                 name=data["name"],
                 english_name=data["english_name"],
                 org=data["org"],
                 sub_org=data["suborg"],
             )
+            self._cache_set(cache_key, channel)
+            return channel
         except httpx.HTTPStatusError as e:
             logger.error(f"HTTP error querying channel {channel_id}: {e.response.status_code} - {e.response.text}")
             raise
