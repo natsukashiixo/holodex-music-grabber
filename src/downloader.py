@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import yt_dlp
 
 from src.logging_config import get_logger
-from src.path_utils import fs_sanitize
+from src.path_utils import fs_sanitize, make_safe_path
 
 logger = get_logger(__name__)
 
@@ -39,7 +39,7 @@ class DownloadResult:
     def deleted(self) -> bool:
         return bool(
             self.error
-            and "Video unavailable. This video has been removed by the uploader" in self.error
+            and "Video unavailable. This video has been removed by the uploader" or "Video unavailable. This video is not available" in self.error
         )
     
     @property
@@ -194,6 +194,7 @@ class MusicDownloader:
             return DownloadResult(success=False, error="Download completed but cache file not found")
 
         # Move to target (atomic on same filesystem)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_output_path = make_safe_path(output_path, video_id)
+        safe_output_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(cache_file), str(output_path))
         return DownloadResult(success=True, file_path=output_path)
