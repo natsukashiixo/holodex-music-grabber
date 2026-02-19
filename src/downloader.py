@@ -59,6 +59,7 @@ class MusicDownloader:
         base_output_dir: Path = Path("Music"),
         cache_dir: Path = Path("cache"),
         po_token: Optional[str] = None,
+        enforce_sleep: bool = True # to help with rate limiting, defaulting to true for the time being
     ):
         self.base_output_dir = base_output_dir
         self.cache_dir = cache_dir
@@ -91,6 +92,11 @@ class MusicDownloader:
                     "player_client": ["default", "mweb"],
                 }
             }
+        if enforce_sleep:
+            opts['max_sleep_interval'] = 20.0
+            opts['sleep_interval'] = 10.0
+            opts['sleep_interval_requests'] = 0.75
+            opts['sleep_interval_subtitles'] = 5.0
         self._ydl = yt_dlp.YoutubeDL(opts)
     
     def _get_output_path(
