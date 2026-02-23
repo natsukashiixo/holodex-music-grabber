@@ -1,4 +1,4 @@
-"""Path and filesystem helpers (no dependency on holodex or utils to avoid circular imports)."""
+"""Path and filesystem helpers"""
 import shutil
 from pathlib import Path
 from typing import Dict, List
@@ -59,33 +59,31 @@ def filename_valid(path: Path) -> bool:
 def pathlength_valid(path: Path) -> bool:
     return len(str(path)) <= 220
 
-def save_name_as_videoid(path: Path, video_id: str) -> Path:
-    return path.with_stem(video_id)
-
 def make_safe_path(path: Path, fallback_stem: str) -> Path:
     # First try as-is
     if filename_valid(path) and pathlength_valid(path):
         return path
 
-    # Fallback to video ID
-    safe = path.with_stem(fallback_stem)
+    safe = path.parent / f"{fallback_stem}{path.suffix}"
 
     if filename_valid(safe) and pathlength_valid(safe):
         return safe
 
     # Last resort: truncate stem to fit
-    ext = safe.suffix
+    ext = path.suffix
     max_bytes = 180 - len(ext.encode("utf-8"))
 
-    stem = safe.stem.encode("utf-8")[:max_bytes]
+    stem = fallback_stem.encode("utf-8")[:max_bytes]
     stem = stem.decode("utf-8", errors="ignore")
 
-    final = safe.with_stem(stem)
+    final = path.parent / f"{stem}{ext}"
 
     if not pathlength_valid(final):
         raise PathTooLongError(final)
 
     return final
+
+
 
 
 def merge_duplicate_suborg_folders(base_dir: Path) -> None:
