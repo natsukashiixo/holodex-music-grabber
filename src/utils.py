@@ -94,9 +94,6 @@ def process_video(
         except Exception as e:
             logger.debug(f"Could not query channel info for {video.channel_id}: {e}")
     
-    # Only sanitize when value came from raw API (video.sub_org), so we never double-sanitize
-    if sub_org and sub_org == video.sub_org:
-        sub_org = sanitize_suborg(sub_org)
     
     # Update channel info in DB
     channel = Channel(
@@ -187,3 +184,11 @@ def process_video(
     
     logger.info(f"✓ Processed: {video.title}")
     return True
+
+def calc_eta(seconds: float, items_left: int, items_processed: int) -> tuple(float, float):
+    if items_processed == 0 or seconds == 0:
+        return float('inf')  # Can't estimate if nothing has been processed
+    
+    rate = items_processed / seconds  # items per second
+    eta = items_left / rate  # remaining time in seconds
+    return rate, eta
