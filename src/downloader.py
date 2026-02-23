@@ -56,10 +56,10 @@ class MusicDownloader:
 
     def __init__(
         self,
-        base_output_dir: Path = Path("Music"),
+        base_output_dir: Path,
         cache_dir: Path = Path("cache"),
         po_token: Optional[str] = None,
-        enforce_sleep: bool = True # to help with rate limiting, defaulting to true for the time being
+        enforce_sleep: bool = True, # to help with rate limiting, defaulting to true for the time being
     ):
         self.base_output_dir = base_output_dir
         self.cache_dir = cache_dir
@@ -145,9 +145,6 @@ class MusicDownloader:
         
         # Sanitize title for filename
         safe_title = fs_sanitize(title)
-        # Limit filename length (filesystem limit)
-        if len(safe_title) > 200:
-            safe_title = safe_title[:200]
         
         return output_dir / f"{safe_title}.mp3"
     
