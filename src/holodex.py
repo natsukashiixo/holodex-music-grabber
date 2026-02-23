@@ -59,8 +59,10 @@ class HolodexChannel:
     sub_org: Optional[str] = None
 
     def __post_init__(self):
-        if self.sub_org:
-            self.sub_org = sanitize_suborg(self.sub_org)
+        if not self.sub_org:
+            self.sub_org = "zzFALLBACK"    
+        self.sub_org = sanitize_suborg(self.sub_org)
+
 
 class HolodexClient:
     """Client for Holodex API."""
