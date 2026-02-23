@@ -4,15 +4,16 @@ import tomllib
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
+import time
+from datetime import timedelta
 
 from src.db import Database
 from src.holodex import HolodexClient
 from src.downloader import MusicDownloader
-from src.utils import check_file_exists, verify_existing_files, process_video, song_to_holodex_video
+from src.utils import check_file_exists, verify_existing_files, process_video, song_to_holodex_video, calc_eta
 from src.logging_config import setup_logging, get_logger
 
 logger = get_logger(__name__)
-
 
 def load_config(config_path: Path = Path("config.toml")) -> Optional[Dict[str, Any]]:
     """
@@ -30,6 +31,9 @@ def load_config(config_path: Path = Path("config.toml")) -> Optional[Dict[str, A
     with open(config_path, "rb") as f:
         return tomllib.load(f)
 
+def path_type(path_str: str) -> Path:
+    """Argparse type that expands and resolves paths."""
+    return Path(path_str).expanduser().resolve()
 
 def expand_path(path_str: str) -> Path:
     """
@@ -88,7 +92,7 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        type=Path,
+        type=path_type,
         default=default_output_dir,
         help=f"Base output directory (default: {default_output_dir})"
     )
@@ -136,18 +140,30 @@ def main():
             logger.info("Fetching videos from Holodex...")
             videos = client.get_all_music_videos(db=db)
 
+        total_vid_count = len(videos) # idk just feels better having this as a constant instead of calling it every time its needed
         success_count = 0
         fail_count = 0
+        total_time = 0.0
         for i, video in enumerate(videos, 1):
+            start = time.time()
             if i == 1 and not args.retry_failed:
                 logger.info("Processing videos (streaming from API)...")
-            logger.info(f"[{i}/{len(videos)}] Processing: {video.title}")
+            logger.info(f"[{i}/{total_vid_count}] Processing: {video.title}")
             if process_video(video, db, downloader, skip_existing=args.skip_existing, client=client):
                 success_count += 1
             else:
                 fail_count += 1
+            end = time.time()
+            ttc = end - start #ttc = time to complete :⁾
+            total_time += ttc
+            rate, eta = calc_eta(seconds=total_time, items_left=(total_vid_count-i), items_processed=i)
+            logger.info("=" * 60)
+            logger.info(f"ETA INFO: Processing speed = {rate}/s")
+            logger.info(f"ETA INFO: Estimated time to completion = {timedelta(seconds=eta)}")
+            logger.info("=" * 60)
         
         logger.info("=" * 60)
+        logger.info(f"Finished processing {total_vid_count} in {timedelta(seconds=total_time)}")
         logger.info(f"Completed: {success_count} successful, {fail_count} failed")
         logger.info("=" * 60)
         
