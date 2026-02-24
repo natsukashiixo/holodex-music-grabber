@@ -173,12 +173,19 @@ class MusicDownloader:
             DownloadResult with success status and file path
         """
         output_path = self._get_output_path(org, sub_org, channel_name, channel_id, topic, title)
+        safe_output_path = make_safe_path(output_path, video_id)
+        safe_output_path.parent.mkdir(parents=True, exist_ok=True)
 
         # If file already exists, skip download
         if output_path.exists():
             return DownloadResult(success=True, file_path=output_path)
 
         url = f"https://www.youtube.com/watch?v={video_id}"
+        # first check if cache file exists
+        cache_file = self.cache_dir / f"{video_id}.mp3"
+        if cache_file.exists():
+            shutil.move(str(cache_file), str(safe_output_path))
+            return DownloadResult(success=True, file_path=safe_output_path)
 
         try:
             self._ydl.download([url])
@@ -186,9 +193,7 @@ class MusicDownloader:
             return DownloadResult(success=False, error=str(e))
         except Exception as e:
             return DownloadResult(success=False, error=f"yt-dlp error: {e}")
-
-        # File lands in cache as video_id.mp3 (postprocessor outputs mp3)
-        cache_file = self.cache_dir / f"{video_id}.mp3"
+        
         if not cache_file.exists():
             # Fallback: any video_id.* in cache (e.g. different ext before postprocessor)
             candidates = list(self.cache_dir.glob(f"{video_id}.*"))
@@ -196,8 +201,5 @@ class MusicDownloader:
         if not cache_file or not cache_file.exists():
             return DownloadResult(success=False, error="Download completed but cache file not found")
 
-        # Move to target (atomic on same filesystem)
-        safe_output_path = make_safe_path(output_path, video_id)
-        safe_output_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(cache_file), str(output_path))
-        return DownloadResult(success=True, file_path=output_path)
+        shutil.move(str(cache_file), str(safe_output_path))
+        return DownloadResult(success=True, file_path=safe_output_path)
