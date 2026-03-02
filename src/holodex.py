@@ -322,3 +322,22 @@ class HolodexClient:
     def close(self):
         """Close the HTTP client."""
         self.client.close()
+
+    def get_new_channels(self):
+        pass
+        # get timestamp of latest indexed video
+        # create set of all unique channel id's
+        # use /channels endpoint with sort:created_at
+        # stop condition is when we hit any channel id that's in the set
+
+    def find_nulled_topics(self):
+        pass
+        # access /videos endpoint
+        # sort by duration
+        # "binary" search to skip until we hit videos of 60s in length
+        # i.e. we start with a pagination offset of 100 and if its past 60s we go back 50 and then we move 25 in the closest direction and so on
+        # any page that contains a video of 60s is good enough, no need to find the actual boundary
+        # that page is the start
+        # then iterate over every page until we hit 900s in video duration while logging everything where topic_id key is missing as we go
+        # send into confidence algo
+        # this should maybe be in the confidence algorithm thingy project? or if i write that project as a separate module we import it and run the check locally inside this project?
