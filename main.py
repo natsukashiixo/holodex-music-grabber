@@ -6,6 +6,7 @@ from typing import Optional, Dict, Any
 import logging
 import time
 from datetime import timedelta
+import argparse
 
 from src.db import Database
 from src.holodex import HolodexClient
@@ -50,7 +51,6 @@ def expand_path(path_str: str) -> Path:
 
 def main():
     """Main function."""
-    import argparse
     
     # Set up logging first
     setup_logging(log_level="INFO")
@@ -87,7 +87,7 @@ def main():
     )
     parser.add_argument(
         "--api-key",
-        help="Holodex API key (optional but recommended)",
+        help="Holodex API key. Mandatory if needing to call Holodex API aka for anything but --verify-files and --retry-failed",
         default=os.getenv("HOLODEX_API_KEY")
     )
     parser.add_argument(
@@ -107,10 +107,10 @@ def main():
         help="Verify existing files and mark missing ones as deleted"
     )
     parser.add_argument(
-        "--skip-existing",
-        action="store_true",
+        "--no-skip-existing",
+        action="store_false",
         default=True,
-        help="Skip videos that are already in database (default: True)"
+        help="Don't skip videos that are already in database (default: skips videos that already exists in db)"
     )
     parser.add_argument(
         "--retry-failed",
@@ -119,9 +119,15 @@ def main():
     )
     args = parser.parse_args()
 
+    hd_api_key = args.api_key or (config and config.get('Keys', {}).get('holodex_key'))
+
+    if not hd_api_key:
+        if any([args.retry_failed, args.verify_files]):
+            raise Exception('Holodex key not set as argument, in config or in environment variable. Pls fix')
+
     # Initialize components
     db = Database(args.db_path)
-    client = HolodexClient(api_key=args.api_key)
+    client = HolodexClient(api_key=hd_api_key)
     downloader = MusicDownloader(
         base_output_dir=args.output_dir,
         cache_dir=default_cache_dir
@@ -140,6 +146,7 @@ def main():
             logger.info("Fetching videos from Holodex...")
             videos = client.get_all_music_videos(db=db)
 
+        videos = list(videos) # cast into list
         total_vid_count = len(videos) # idk just feels better having this as a constant instead of calling it every time its needed
         success_count = 0
         fail_count = 0
@@ -149,7 +156,7 @@ def main():
             if i == 1 and not args.retry_failed:
                 logger.info("Processing videos (streaming from API)...")
             logger.info(f"[{i}/{total_vid_count}] Processing: {video.title}")
-            if process_video(video, db, downloader, skip_existing=args.skip_existing, client=client):
+            if process_video(video, db, downloader, skip_existing=args.no_skip_existing, client=client):
                 success_count += 1
             else:
                 fail_count += 1
