@@ -49,7 +49,7 @@ python main.py --channels UCl_gCybOJRIgOXw6Qb4qJzQ UCp6993wxpyDPHUpavwDFqgg
 python main.py --org Hololive
 ```
 
-### With API key (recommended)
+### With API key
 
 ```bash
 export HOLODEX_API_KEY=your_api_key_here
