@@ -89,11 +89,16 @@ class Database:
                 CREATE TABLE IF NOT EXISTS channels (
                     channel_id TEXT PRIMARY KEY,
                     name TEXT,
-                    english_name TEXT,
                     org TEXT,
                     sub_org TEXT
                 )
             """)
+
+            # english_name was speculative (added from reading the Holodex API docs)
+            # and never ended up used; drop it if an older DB still has it.
+            existing_columns = {row["name"] for row in cur.execute("PRAGMA table_info(channels)").fetchall()}
+            if "english_name" in existing_columns:
+                cur.execute("ALTER TABLE channels DROP COLUMN english_name")
 
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS songs (
@@ -125,8 +130,12 @@ class Database:
 
         with self.cursor() as cur:
             cur.execute("""
-                INSERT OR REPLACE INTO channels (channel_id, name, org, sub_org)
+                INSERT INTO channels (channel_id, name, org, sub_org)
                 VALUES (?, ?, ?, ?)
+                ON CONFLICT(channel_id) DO UPDATE SET
+                    name = excluded.name,
+                    org = COALESCE(excluded.org, channels.org),
+                    sub_org = COALESCE(excluded.sub_org, channels.sub_org)
             """, (channel.channel_id, channel.name, channel.org, channel.sub_org))
 
     def get_channel(self, channel_id: str) -> Optional[Channel]:
@@ -138,15 +147,6 @@ class Database:
             """, (channel_id,))
             row = cur.fetchone()
             return Channel(**row) if row else None
-
-    def normalize_channel_sub_orgs(self) -> int:
-        with self.cursor() as cur:
-            cur.execute("""
-                UPDATE channels
-                SET sub_org = substr(sub_org, 3)
-                WHERE sub_org IS NOT NULL AND length(sub_org) > 2
-            """)
-            return cur.rowcount
 
     # ---------- Songs ----------
 
@@ -203,8 +203,12 @@ class Database:
         with self.cursor() as cur:
             if self._channel_queue:
                 cur.executemany("""
-                    INSERT OR REPLACE INTO channels (channel_id, name, org, sub_org)
+                    INSERT INTO channels (channel_id, name, org, sub_org)
                     VALUES (?, ?, ?, ?)
+                    ON CONFLICT(channel_id) DO UPDATE SET
+                        name = excluded.name,
+                        org = COALESCE(excluded.org, channels.org),
+                        sub_org = COALESCE(excluded.sub_org, channels.sub_org)
                 """, [
                     (c.channel_id, c.name, c.org, c.sub_org)
                     for c in self._channel_queue
@@ -274,6 +278,10 @@ class Database:
                 AND (members_only = 0 OR members_only IS NULL)
                 AND (privated = 0 OR privated IS NULL)
                 AND (deleted = 0 OR deleted IS NULL)
+                AND (error IS NULL OR (
+                    error NOT LIKE '%blocked it in your country on copyright grounds%'
+                    AND error NOT LIKE 'duration_out_of_bounds%'
+                ))
             """
 
         with self.cursor() as cur:

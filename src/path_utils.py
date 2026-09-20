@@ -1,7 +1,6 @@
 """Path and filesystem helpers"""
-import shutil
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Optional
 import unicodedata
 import re
 
@@ -21,9 +20,40 @@ class PathTooLongError(Exception):
     pass
 
 
+# Holodex's raw `suborg` field is genuinely prefixed with a 2-char sort code
+# (e.g. "00Official", "1b2nd Generation", "vjVjidai Production") that should be
+# stripped for display/storage. The transform itself (`s[2:]`) is correct; the
+# bug that corrupted this project's data was calling it more than once on the
+# same value from multiple uncoordinated code paths. This version is written to
+# be a no-op on its own output: a successful strip always leaves the result
+# starting with an uppercase letter or digit, which can never satisfy the
+# lowercase-prefix branch below on a second pass. Call it as often as you like -
+# it will never do more damage after the first correct application - but it
+# should still only ever be invoked once per raw value, at the point that value
+# is first parsed out of a Holodex API response.
+_SUBORG_PREFIX_RE_ALPHA_LEAD = re.compile(r'^[0-9a-z]{2}(?=[A-Z0-9])')
+_SUBORG_PREFIX_RE_DIGIT_LEAD = re.compile(r'^[0-9]{2}(?=[A-Z])')
+
+_SUBORG_MANUAL_OVERRIDES: Dict[str, str] = {
+    "avavex muchoo": "avex muchoo",
+}
+
 def sanitize_suborg(sub_org: str) -> str:
-    """Normalize sub_org for storage and paths (e.g. strip 2-char prefix like 'zz')."""
-    return sub_org[2:] if len(sub_org) > 2 else sub_org
+    """Strip Holodex's 2-char suborg sort-code prefix, if present. Idempotent."""
+    if not sub_org:
+        return sub_org
+    if sub_org in _SUBORG_MANUAL_OVERRIDES:
+        return _SUBORG_MANUAL_OVERRIDES[sub_org]
+    if len(sub_org) <= 2:
+        return sub_org
+    prefix = sub_org[:2]
+    if re.match(r'^[0-9]{2}$', prefix):
+        if _SUBORG_PREFIX_RE_DIGIT_LEAD.match(sub_org):
+            return sub_org[2:]
+        return sub_org
+    if re.match(r'^[0-9a-z]{2}$', prefix) and _SUBORG_PREFIX_RE_ALPHA_LEAD.match(sub_org):
+        return sub_org[2:]
+    return sub_org
 
 def strip_emoji(s: str) -> str:
     return "".join(
@@ -86,28 +116,35 @@ def make_safe_path(path: Path, fallback_stem: str) -> Path:
 
 
 
-def merge_duplicate_suborg_folders(base_dir: Path) -> None:
-    """Merge sub_org folders that collapse to the same name after sanitize_suborg.
-    E.g. Org/EN_Vtuber/ and Org/Vtuber/ both become Org/Vtuber/ (content merged).
+def build_relative_song_path(
+    org: Optional[str],
+    sub_org: Optional[str],
+    channel_name: str,
+    channel_id: str,
+    topic: str,
+    title: str,
+) -> Path:
     """
-    for org_dir in base_dir.iterdir():
-        if not org_dir.is_dir():
-            continue
-        subdirs = [d for d in org_dir.iterdir() if d.is_dir()]
-        by_canonical: Dict[str, List[Path]] = {}
-        for d in subdirs:
-            canonical = fs_sanitize(sanitize_suborg(d.name))
-            by_canonical.setdefault(canonical, []).append(d)
-        for canonical, dirs in by_canonical.items():
-            to_merge = [d for d in dirs if d.name != canonical]
-            if not to_merge:
-                continue
-            target = next((d for d in dirs if d.name == canonical), None) or (org_dir / canonical)
-            if not target.exists():
-                target.mkdir(parents=True, exist_ok=True)
-            for src in to_merge:
-                if src.resolve() == target.resolve():
-                    continue
-                logger.info(f"Merging {src.relative_to(base_dir)} into {target.relative_to(base_dir)}")
-                shutil.copytree(src, target, dirs_exist_ok=True)
-                shutil.rmtree(src)
+    Build the canonical relative output path for a song: Org/Sub-org/Channel/Covers|Originals/title.mp3.
+    Pure function, no filesystem side effects - shared by the live downloader and
+    scripts/reorganize_music_files.py so the two can never diverge again.
+    """
+    parts = []
+
+    if org:
+        parts.append(fs_sanitize(org))
+    if sub_org:
+        parts.append(fs_sanitize(sanitize_suborg(sub_org)))
+
+    # Channel folder always includes channel_id so same-name channels don't collide
+    parts.append(fs_sanitize(f"{channel_name}_{channel_id}"))
+
+    if topic == "Music_Cover":
+        parts.append("Covers")
+    elif topic == "Original_Song":
+        parts.append("Originals")
+    else:
+        parts.append("Other")
+
+    safe_title = fs_sanitize(title)
+    return Path(*parts) / f"{safe_title}.mp3"

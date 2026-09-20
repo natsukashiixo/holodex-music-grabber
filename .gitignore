@@ -210,3 +210,4 @@ __marimo__/
 writeup.md
 config.toml
 db/*
+scripts/state/*

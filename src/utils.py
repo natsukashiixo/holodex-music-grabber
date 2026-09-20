@@ -7,10 +7,20 @@ from src.db import Database, Channel, Song, hash_file
 from src.holodex import HolodexVideo, HolodexClient
 from src.downloader import MusicDownloader
 from src.logging_config import get_logger
-from src.path_utils import sanitize_suborg
 from typing import Optional
 
 logger = get_logger(__name__)
+
+# Duration gate for process_video(). Hard bounds are checked *before* handing a
+# video to yt-dlp, since that's the expensive/bandwidth-costing step: <5s is
+# almost certainly a data glitch, >3600s (1hr) is almost certainly a mistagged
+# livestream/zatsudan rather than a song. Soft bounds are informational only
+# (logged, not persisted) for content that downloads fine but is unusual enough
+# to be worth a manual glance later (e.g. long medleys).
+DURATION_HARD_MIN_SECONDS = 5
+DURATION_HARD_MAX_SECONDS = 3600
+DURATION_SOFT_MIN_SECONDS = 30
+DURATION_SOFT_MAX_SECONDS = 1200
 
 def song_to_holodex_video(song: Song, db: Database) -> HolodexVideo:
     """Build a HolodexVideo from a DB Song (e.g. for --retry-failed). Fills channel name/org/sub_org from DB."""
@@ -103,7 +113,26 @@ def process_video(
         sub_org=sub_org
     )
     db.upsert_channel(channel)
-    
+
+    # Pre-download hard duration gate - never hand an out-of-bounds video to yt-dlp
+    if video.duration is not None and (
+        video.duration < DURATION_HARD_MIN_SECONDS or video.duration > DURATION_HARD_MAX_SECONDS
+    ):
+        logger.warning(f"Skipping download, duration {video.duration}s out of bounds: {video.title} ({video.video_id})")
+        song = Song(
+            video_id=video.video_id,
+            channel_id=video.channel_id,
+            title=video.title,
+            topic=video.topic,
+            available_at=video.available_at,
+            file_hash=None,
+            file_path=None,
+            duration=video.duration,
+            error=f"duration_out_of_bounds ({video.duration}s)",
+        )
+        db.add_song(song)
+        return False
+
     # Download the video
     logger.info(f"Downloading: {video.title}")
     result = downloader.download(
@@ -138,10 +167,11 @@ def process_video(
             privated=result.privated,
             deleted=result.deleted,
             error=result.error,
+            duration=video.duration,
         )
         db.add_song(song)
         return False
-    
+
     if not result.file_path or not result.file_path.exists():
         logger.error(f"Download completed but file not found: {video.title}")
         song = Song(
@@ -152,13 +182,14 @@ def process_video(
             available_at=video.available_at,
             file_hash=None,
             file_path=None,
+            duration=video.duration,
         )
         db.add_song(song)
         return False
-    
+
     # Calculate file hash
     file_hash = hash_file(result.file_path)
-    
+
     # Check for duplicates
     duplicate_video_id = db.hash_exists(file_hash)
     if duplicate_video_id and duplicate_video_id != video.video_id:
@@ -167,9 +198,31 @@ def process_video(
         existing = db.get_song(duplicate_video_id)
         if existing:
             logger.warning(f"  Existing: {existing.title} ({duplicate_video_id})")
-        # Still add to DB but note it's a duplicate
-        # You might want to delete the file here if you want strict deduplication
-    
+        # Strict dedup: remove the newly-downloaded duplicate file, keep the canonical
+        # row's file_hash/deleted=0 so hash_exists() keeps resolving to it.
+        result.file_path.unlink(missing_ok=True)
+        song = Song(
+            video_id=video.video_id,
+            channel_id=video.channel_id,
+            title=video.title,
+            topic=video.topic,
+            available_at=video.available_at,
+            file_hash=file_hash,
+            file_path=None,
+            deleted=True,
+            error=f"duplicate content of {duplicate_video_id}; file removed",
+            duration=video.duration,
+        )
+        db.add_song(song)
+        logger.info(f"✓ Processed (duplicate, file removed): {video.title}")
+        return True
+
+    if video.duration is not None and (
+        (DURATION_HARD_MIN_SECONDS <= video.duration < DURATION_SOFT_MIN_SECONDS)
+        or (DURATION_SOFT_MAX_SECONDS < video.duration <= DURATION_HARD_MAX_SECONDS)
+    ):
+        logger.warning(f"Unusual duration ({video.duration}s), worth a glance: {video.title} ({video.video_id})")
+
     # Add song to database with file_hash (marks as successfully processed)
     song = Song(
         video_id=video.video_id,
@@ -178,14 +231,15 @@ def process_video(
         topic=video.topic,
         available_at=video.available_at,
         file_hash=file_hash,
-        file_path=str(result.file_path.relative_to(downloader.base_output_dir))
+        file_path=str(result.file_path.relative_to(downloader.base_output_dir)),
+        duration=video.duration,
     )
     db.add_song(song)
-    
+
     logger.info(f"✓ Processed: {video.title}")
     return True
 
-def calc_eta(seconds: float, items_left: int, items_processed: int) -> tuple(float, float):
+def calc_eta(seconds: float, items_left: int, items_processed: int) -> tuple[float, float]:
     if items_processed == 0 or seconds == 0:
         return float('inf')  # Can't estimate if nothing has been processed
     

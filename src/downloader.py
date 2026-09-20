@@ -7,12 +7,20 @@ from dataclasses import dataclass
 import yt_dlp
 
 from src.logging_config import get_logger
-from src.path_utils import fs_sanitize, make_safe_path
+from src.path_utils import build_relative_song_path, make_safe_path
 
 logger = get_logger(__name__)
 
-# TODO: 2026-02-16 12:02:25 [ERROR   ] src.utils: Download failed: ERROR: [youtube] F-3M_aotvcE: Video unavailable. This video contains content from Sony Music Entertainment (Japan) Inc., who has blocked it in your country on copyright grounds
 # TODO: implement total count + current download nr in the --retry thing
+
+
+def _error_matches(error: Optional[str], *phrases: str) -> bool:
+    """True if `error` is set and contains any of `phrases`. Shared by DownloadResult
+    properties and scripts/backfill_error_flags.py so classification can never drift
+    between the two."""
+    if not error:
+        return False
+    return any(phrase in error for phrase in phrases)
 
 
 @dataclass
@@ -23,30 +31,32 @@ class DownloadResult:
 
     @property
     def members_only(self) -> bool:
-        return bool(
-            self.error
-            and "This video is available to this channel's members" or "members-only content like this video" in self.error
+        return _error_matches(
+            self.error,
+            "This video is available to this channel's members",
+            "members-only content like this video",
         )
 
     @property
     def privated(self) -> bool:
-        return bool(
-            self.error
-            and "Private video. Sign in if you've been granted access" in self.error
+        return _error_matches(
+            self.error,
+            "Private video. Sign in if you've been granted access",
         )
 
     @property
     def deleted(self) -> bool:
-        return bool(
-            self.error
-            and "Video unavailable. This video has been removed by the uploader" or "Video unavailable. This video is not available" in self.error
+        return _error_matches(
+            self.error,
+            "Video unavailable. This video has been removed by the uploader",
+            "Video unavailable. This video is not available",
         )
-    
+
     @property
     def georestricted(self) -> bool:
-        return bool(
-            self.error
-            and "who has blocked it in your country on copyright grounds" in self.error
+        return _error_matches(
+            self.error,
+            "who has blocked it in your country on copyright grounds",
         )
 
 class MusicDownloader:
@@ -121,32 +131,17 @@ class MusicDownloader:
         Returns:
             Path object for the output file
         """
-        
-        parts = [self.base_output_dir]
-        
-        if org:
-            parts.append(fs_sanitize(org))
-        if sub_org:
-            parts.append(fs_sanitize(sub_org))
-        
-        # Channel folder always includes channel_id so same-name channels don't collide
-        parts.append(fs_sanitize(f"{channel_name}_{channel_id}"))
-        
-        # Covers or Originals folder
-        if topic == "Music_Cover":
-            parts.append("Covers")
-        elif topic == "Original_Song":
-            parts.append("Originals")
-        else:
-            parts.append("Other")
-        
-        output_dir = Path(*parts)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Sanitize title for filename
-        safe_title = fs_sanitize(title)
-        
-        return output_dir / f"{safe_title}.mp3"
+        relative_path = build_relative_song_path(
+            org=org,
+            sub_org=sub_org,
+            channel_name=channel_name,
+            channel_id=channel_id,
+            topic=topic,
+            title=title,
+        )
+        output_path = self.base_output_dir / relative_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        return output_path
     
     def download(
         self,

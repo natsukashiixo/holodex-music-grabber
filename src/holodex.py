@@ -54,13 +54,12 @@ class HolodexChannel:
     """Channel information from Holodex API."""
     channel_id: str
     name: str
-    english_name: Optional[str] = None # either not accessed correctly here, or not assigned properly in db
     org: Optional[str] = None
     sub_org: Optional[str] = None
 
     def __post_init__(self):
         if not self.sub_org:
-            self.sub_org = "zzFALLBACK"    
+            self.sub_org = "zzFALLBACK"
         self.sub_org = sanitize_suborg(self.sub_org)
 
 
@@ -134,7 +133,22 @@ class HolodexClient:
         if from_date:
             params["from"] = from_date
         
-        cache_key = ("videos", str(params.get("topic")), str(params.get("limit")), str(params.get("offset")), str(params.get("from", "")))
+        # Must include every param that affects the response - channel_id and org
+        # were previously omitted, which silently collided across different
+        # channels' queries sharing the same topic/limit/offset/from_date within
+        # the cache TTL (harmless for the original topic-only bulk ingestion
+        # pattern, but returns another channel's videos entirely once channel_id
+        # becomes a real query dimension, e.g. scripts/backfill_duration.py).
+        cache_key = (
+            "videos",
+            str(params.get("channel_id", "")),
+            str(params.get("topic")),
+            str(params.get("org", "")),
+            str(params.get("status")),
+            str(params.get("limit")),
+            str(params.get("offset")),
+            str(params.get("from", "")),
+        )
         cached = self._cache_get(cache_key)
         if cached is not None:
             return cached
@@ -187,7 +201,7 @@ class HolodexClient:
                     available_at=item["available_at"],
                     channel_name=channel_info.get("name"),
                     org=channel_info.get("org"),
-                    sub_org=channel_info.get("suborg"),
+                    sub_org=sanitize_suborg(channel_info.get("suborg") or "zzFALLBACK"),
                     duration=item.get("duration"),
                 )
                 videos.append(video)
@@ -306,7 +320,6 @@ class HolodexClient:
             channel = HolodexChannel(
                 channel_id=data["id"],
                 name=data["name"],
-                english_name=data["english_name"],
                 org=data["org"],
                 sub_org=data["suborg"],
             )
