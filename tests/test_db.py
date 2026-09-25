@@ -61,6 +61,22 @@ def test_get_songs_without_file_hash_no_exclusion(db):
     assert all_failed == {"members", "generic"}
 
 
+def test_get_songs_without_file_hash_order_is_deterministic_on_ties(db):
+    # Regression/determinism check for main.py's --limit flag: picking "the
+    # first N" from the retry queue must return the same N videos every run
+    # (as long as none of them succeed in between), even when multiple rows
+    # share the exact same available_at timestamp.
+    db.upsert_channel(Channel(channel_id="chan1", name="Channel"))
+    same_timestamp = "2026-01-01T00:00:00Z"
+    for video_id in ["c", "a", "b"]:
+        db.add_song(make_song(video_id, available_at=same_timestamp))
+
+    order_1 = [s.video_id for s in db.get_songs_without_file_hash(exclude_unavailable=False)]
+    order_2 = [s.video_id for s in db.get_songs_without_file_hash(exclude_unavailable=False)]
+
+    assert order_1 == order_2 == ["a", "b", "c"]
+
+
 def test_upsert_channel_does_not_null_out_existing_org_on_partial_update(db):
     db.upsert_channel(Channel(channel_id="chan1", name="Channel", org="OrgName", sub_org="SubOrg"))
 

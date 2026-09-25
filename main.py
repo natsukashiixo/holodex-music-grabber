@@ -114,6 +114,15 @@ def main():
         action="store_true",
         help="Only process rows where file_hash IS NULL (retry failed/unfinished downloads); no API fetch"
     )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Process at most N videos this run. Combined with --retry-failed, the retry queue is a "
+             "stable ORDER BY, so the same N videos are picked every run as long as none of them "
+             "succeed - useful for spot-checking a small batch (e.g. a new PO-token setup) before "
+             "committing to a long full run."
+    )
     args = parser.parse_args()
 
     hd_api_key = args.api_key or (config and config.get('Keys', {}).get('holodex_key'))
@@ -144,6 +153,8 @@ def main():
             videos = client.get_all_music_videos(db=db)
 
         videos = list(videos) # cast into list
+        if args.limit is not None:
+            videos = videos[:args.limit]
         total_vid_count = len(videos) # idk just feels better having this as a constant instead of calling it every time its needed
         success_count = 0
         fail_count = 0

@@ -291,7 +291,7 @@ class Database:
                 SELECT *
                 FROM songs
                 WHERE {where}
-                ORDER BY available_at DESC
+                ORDER BY available_at DESC, video_id ASC
             """)
             return [Song(**row) for row in cur.fetchall()]
 
