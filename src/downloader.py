@@ -101,6 +101,16 @@ class MusicDownloader:
             #"cookiesfrombrowser": ('firefox',),
             #"verbose": True,
             "remote-components": "ejs:github",
+            # Route yt-dlp's own debug/warning/error output through our logger
+            # instead of letting it print directly to stdout/stderr - a plain
+            # logging.Logger already matches yt-dlp's expected interface
+            # (debug/warning/error, one message arg each). Without this,
+            # diagnostically important messages (PO token status, YouTube
+            # SABR-streaming experiments, signature-solver failures) were only
+            # ever visible live in a terminal and never reached the persistent
+            # log file or DownloadResult.error, making failures like "HTTP
+            # Error 403" undiagnosable after the fact.
+            "logger": logger,
             # PO token acquisition is handled by yt-dlp's native PO-token-provider
             # framework via the bgutil-ytdlp-pot-provider plugin (see README) -
             # nothing to configure here, it's transparent once the plugin and its
