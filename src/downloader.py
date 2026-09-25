@@ -100,7 +100,17 @@ class MusicDownloader:
             "parse_metadata": ["playlist_index:%(track_number)s"],
             #"cookiesfrombrowser": ('firefox',),
             #"verbose": True,
-            "remote-components": "ejs:github",
+            # ejs:github fetches the signature/n-challenge solver script live
+            # from GitHub releases and can end up stuck on a stale cached
+            # version incompatible with what yt-dlp expects (confirmed:
+            # v0.4.0 cached vs v0.8.0 required), and its Deno invocation runs
+            # with --cached-only, so it can't self-heal by fetching the newer
+            # npm-based dependencies it needs. ejs:npm uses yt-dlp's builtin
+            # v0.8.0 script instead - verified live to fully resolve the
+            # "signature/n challenge solving failed" warnings that otherwise
+            # appear on nearly every video and add ~15-20s of futile
+            # solve-attempt latency each.
+            "remote-components": "ejs:npm",
             # Route yt-dlp's own debug/warning/error output through our logger
             # instead of letting it print directly to stdout/stderr - a plain
             # logging.Logger already matches yt-dlp's expected interface
