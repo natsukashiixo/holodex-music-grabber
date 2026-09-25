@@ -281,6 +281,8 @@ class Database:
                 AND (error IS NULL OR (
                     error NOT LIKE '%blocked it in your country on copyright grounds%'
                     AND error NOT LIKE 'duration_out_of_bounds%'
+                    AND error NOT LIKE '%Sign in to confirm your age%'
+                    AND error NOT LIKE '%The uploader has not made this video available%'
                 ))
             """
 

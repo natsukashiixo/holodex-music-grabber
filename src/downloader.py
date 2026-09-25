@@ -42,6 +42,7 @@ class DownloadResult:
         return _error_matches(
             self.error,
             "Private video. Sign in if you've been granted access",
+            "Private video. If the owner of this video has granted you access",
         )
 
     @property
@@ -59,6 +60,20 @@ class DownloadResult:
             "who has blocked it in your country on copyright grounds",
         )
 
+    @property
+    def age_restricted(self) -> bool:
+        return _error_matches(
+            self.error,
+            "Sign in to confirm your age",
+        )
+
+    @property
+    def uploader_unavailable(self) -> bool:
+        return _error_matches(
+            self.error,
+            "The uploader has not made this video available",
+        )
+
 class MusicDownloader:
     """Downloader for music using yt-dlp.
     Uses a single yt-dlp instance (session reuse); downloads to cache then moves to target.
@@ -68,7 +83,6 @@ class MusicDownloader:
         self,
         base_output_dir: Path,
         cache_dir: Path = Path("cache"),
-        po_token: Optional[str] = None,
         enforce_sleep: bool = True, # to help with rate limiting, defaulting to true for the time being
     ):
         self.base_output_dir = base_output_dir
@@ -86,22 +100,17 @@ class MusicDownloader:
             "parse_metadata": ["playlist_index:%(track_number)s"],
             #"cookiesfrombrowser": ('firefox',),
             #"verbose": True,
-            "remote-components": "ejs:github"
+            "remote-components": "ejs:github",
+            # PO token acquisition is handled by yt-dlp's native PO-token-provider
+            # framework via the bgutil-ytdlp-pot-provider plugin (see README) -
+            # nothing to configure here, it's transparent once the plugin and its
+            # companion server are available.
+            "extractor_args": {
+                "youtube": {
+                    "player_client": ["default", "mweb"],
+                }
+            },
         }
-        if po_token and po_token.strip():
-            opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["default", "mweb"],
-                    "po_token": [f"mweb.gvs+{po_token.strip()}"],
-                }
-            }
-            logger.debug("Using YouTube PO token for GVS (SABR)")
-        else:
-            opts["extractor_args"] = {
-                "youtube": {
-                    "player_client": ["default", "mweb"],
-                }
-            }
         if enforce_sleep:
             opts['max_sleep_interval'] = 20.0
             opts['sleep_interval'] = 10.0
@@ -171,9 +180,24 @@ class MusicDownloader:
         safe_output_path = make_safe_path(output_path, video_id)
         safe_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # If file already exists, skip download
-        if output_path.exists():
-            return DownloadResult(success=True, file_path=output_path)
+        # NOTE: there used to be an "if output_path.exists(): return success"
+        # shortcut here. Removed - output_path is built from title/channel/topic
+        # only (no video_id), so two different videos sharing an identical
+        # title under the same channel+topic collide on the same path. That
+        # shortcut would silently claim a DIFFERENT video's file as this one's
+        # "successful" download, which (combined with strict-dedup elsewhere)
+        # could delete the other video's only copy. The caller (process_video)
+        # already does the correct video_id-keyed "already downloaded" check
+        # via the DB before ever calling download() - this method should
+        # always attempt a real download and let the collision guard below
+        # handle any path clash instead of guessing based on path existence.
+        if safe_output_path.exists():
+            # A file already sits at our target path, but process_video already
+            # confirmed (via the DB, by video_id) that we haven't downloaded
+            # this video before - so this must be a different video's file.
+            # Disambiguate rather than silently overwriting it.
+            safe_output_path = safe_output_path.parent / f"{safe_output_path.stem}_{video_id}{safe_output_path.suffix}"
+            logger.warning(f"Path collision for {video_id}, using disambiguated path: {safe_output_path.name}")
 
         url = f"https://www.youtube.com/watch?v={video_id}"
         # first check if cache file exists

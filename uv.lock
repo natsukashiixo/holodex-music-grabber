@@ -15,6 +15,15 @@ wheels = [
 ]
 
 [[package]]
+name = "bgutil-ytdlp-pot-provider"
+version = "2.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d9/f2/785a5d6a0d69508756a3bf53af430660a47a4143abdd40543089b03108de/bgutil_ytdlp_pot_provider-2.0.0.tar.gz", hash = "sha256:dac2d1aeeac63218efe879e538e978d2efc088ed887124095e6fd6a09c3077df", size = 11688, upload-time = "2026-09-08T00:11:47.482Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/38/fd54194c03f6636488343d4c49e96ce2fe8ecd228c0cf7ce4d024ab7d52b/bgutil_ytdlp_pot_provider-2.0.0-py3-none-any.whl", hash = "sha256:22884c399802771ddfd9275bb05b178d67c89db67a1d5d1e17ed7f681956628e", size = 12358, upload-time = "2026-09-08T00:11:46.305Z" },
+]
+
+[[package]]
 name = "certifi"
 version = "2026.1.4"
 source = { registry = "https://pypi.org/simple" }
@@ -46,6 +55,7 @@ name = "holodex-music-grabber"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "bgutil-ytdlp-pot-provider" },
     { name = "httpx" },
     { name = "yt-dlp" },
 ]
@@ -57,6 +67,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bgutil-ytdlp-pot-provider", specifier = ">=2.0.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "yt-dlp", specifier = ">=2024.0.0" },
 ]

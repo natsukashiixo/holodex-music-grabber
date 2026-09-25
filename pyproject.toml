@@ -5,6 +5,7 @@ description = "Automatic download of VTuber songs leveraging Holodex API and yt-
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "bgutil-ytdlp-pot-provider>=2.0.0",
     "httpx>=0.27.0",
     "yt-dlp>=2024.0.0",
 ]

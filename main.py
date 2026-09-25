@@ -63,7 +63,6 @@ def main():
     default_db_path = "music.db"
     default_cache_dir = Path("/tmp/holodex-music-grabber-cache")
     default_cache_dir.mkdir(parents=True, exist_ok=True)
-    po_token = None
     if config:
         if "Paths" in config:
             paths = config["Paths"]
@@ -79,9 +78,7 @@ def main():
             if "cache_folder" in paths and paths["cache_folder"]:
                 default_cache_dir = expand_path(paths["cache_folder"])
                 default_cache_dir.mkdir(parents=True, exist_ok=True)
-        if "Keys" in config and config["Keys"].get("youtube_PO_token"):
-            po_token = config["Keys"]["youtube_PO_token"]
-    
+
     parser = argparse.ArgumentParser(
         description="Download VTuber music from Holodex using yt-dlp"
     )
