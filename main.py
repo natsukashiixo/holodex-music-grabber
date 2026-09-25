@@ -147,7 +147,6 @@ def main():
         if args.retry_failed:
             songs = db.get_songs_without_file_hash(exclude_unavailable=True)
             videos = [song_to_holodex_video(s, db) for s in songs]
-            logger.info(f"Retrying {len(videos)} videos with no file_hash (excluding members-only/privated/deleted)")
         else:
             logger.info("Fetching videos from Holodex...")
             videos = client.get_all_music_videos(db=db)
@@ -156,6 +155,9 @@ def main():
         if args.limit is not None:
             videos = videos[:args.limit]
         total_vid_count = len(videos) # idk just feels better having this as a constant instead of calling it every time its needed
+
+        if args.retry_failed:
+            logger.info(f"Retrying {total_vid_count} videos with no file_hash (excluding members-only/privated/deleted)")
         success_count = 0
         fail_count = 0
         total_time = 0.0
