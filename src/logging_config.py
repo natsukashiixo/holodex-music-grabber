@@ -19,9 +19,11 @@ def setup_logging(
     
     Args:
         log_dir: Custom log directory (overrides default)
-        log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_level: Console verbosity (DEBUG, INFO, WARNING, ERROR, CRITICAL).
+            The file handler always captures DEBUG and above regardless of
+            this setting - this only controls what's echoed to the console.
         app_name: Application name for log directory
-        
+
     Returns:
         Configured logger instance
     """
@@ -43,9 +45,15 @@ def setup_logging(
     # Log file path: <app_name>.log
     log_file = log_path / f"{app_name}.log"
     
-    # Configure root logger
+    # Configure root logger. This must stay at DEBUG unconditionally - the
+    # logger's own level is the first gate every record passes through,
+    # before it ever reaches a handler, so setting it any higher than DEBUG
+    # would silently drop debug records for every handler regardless of that
+    # handler's own level (this previously made the file handler's "log
+    # everything" setting below dead code whenever main.py called this with
+    # log_level="INFO"). log_level only controls the console handler.
     logger = logging.getLogger()
-    logger.setLevel(getattr(logging, log_level.upper()))
+    logger.setLevel(logging.DEBUG)
     
     # Clear any existing handlers
     logger.handlers.clear()
@@ -67,9 +75,9 @@ def setup_logging(
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
     
-    # Console handler (INFO and above)
+    # Console handler - verbosity controlled by log_level
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(getattr(logging, log_level.upper()))
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     
