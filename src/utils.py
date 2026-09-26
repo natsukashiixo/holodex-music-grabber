@@ -94,7 +94,12 @@ def process_video(
     org = db_channel.org if db_channel else video.org
     sub_org = db_channel.sub_org if db_channel else video.sub_org
     
-    # If we don't have org/suborg and have a client, try querying the channel endpoint
+    # If we don't have org/suborg and have a client, try querying the channel endpoint.
+    # This only fires while org/sub_org are still NULL - once a channel has both set,
+    # they're frozen forever and never re-checked against Holodex again. That's
+    # intentional (see writeup.md, 2026-09-26): orgs/suborgs churn over time
+    # (graduations, restructuring) and it's not worth tracking - channel_id is the
+    # durable key, not this.
     if (org is None or sub_org is None) and client:
         try:
             holodex_channel = client.query_channel(video.channel_id)
