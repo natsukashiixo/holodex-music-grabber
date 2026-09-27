@@ -1,5 +1,6 @@
 """Main entry point for holodex-music-grabber."""
 import os
+import sys
 import tomllib
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -13,8 +14,18 @@ from src.holodex import HolodexClient
 from src.downloader import MusicDownloader
 from src.utils import check_file_exists, verify_existing_files, process_video, song_to_holodex_video, calc_eta
 from src.logging_config import setup_logging, get_logger
+from src.lockfile import acquire_lock, AlreadyRunningError
 
 logger = get_logger(__name__)
+
+# Stop a run early rather than keep hammering a possibly rate-limited/bot-
+# blocked session once this many *consecutive* videos fail in a row,
+# regardless of error type - simpler than pattern-matching specific error
+# text, and also catches other "everything's suddenly broken" scenarios
+# (e.g. the PO-token provider going down mid-run) uniformly. 10 reacts within
+# ~40s at the observed ~4s/failure pace, while still tolerating a short
+# coincidental cluster of genuinely-dead videos from one terminated channel.
+CONSECUTIVE_FAILURE_THRESHOLD = 10
 
 def load_config(config_path: Path = Path("config.toml")) -> Optional[Dict[str, Any]]:
     """
@@ -131,6 +142,17 @@ def main():
         if any([args.retry_failed, args.verify_files]):
             raise Exception('Holodex key not set as argument, in config or in environment variable. Pls fix')
 
+    # Single-instance lock - co-located with the DB, since that's what a second
+    # concurrent process would actually contend for (plus the shared cache dir).
+    # Applies to every mode, not just --retry-failed: any concurrent invocation
+    # risks the same DB/cache-dir contention regardless of which flags it runs with.
+    lock_path = Path(args.db_path).resolve().parent / ".holodex-music-grabber.lock"
+    try:
+        lock_handle = acquire_lock(lock_path)
+    except AlreadyRunningError as e:
+        logger.error(str(e))
+        sys.exit(1)
+
     # Initialize components
     db = Database(args.db_path)
     client = HolodexClient(api_key=hd_api_key)
@@ -161,6 +183,8 @@ def main():
         success_count = 0
         fail_count = 0
         total_time = 0.0
+        consecutive_failures = 0
+        circuit_broken = False
         for i, video in enumerate(videos, 1):
             start = time.time()
             if i == 1 and not args.retry_failed:
@@ -168,8 +192,10 @@ def main():
             logger.info(f"[{i}/{total_vid_count}] Processing: {video.title}")
             if process_video(video, db, downloader, skip_existing=args.no_skip_existing, client=client):
                 success_count += 1
+                consecutive_failures = 0
             else:
                 fail_count += 1
+                consecutive_failures += 1
             end = time.time()
             ttc = end - start #ttc = time to complete :⁾
             total_time += ttc
@@ -178,14 +204,29 @@ def main():
             logger.info(f"ETA INFO: Processing speed = {rate}/s")
             logger.info(f"ETA INFO: Estimated time to completion = {timedelta(seconds=eta)}")
             logger.info("=" * 60)
-        
+
+            if consecutive_failures >= CONSECUTIVE_FAILURE_THRESHOLD:
+                circuit_broken = True
+                logger.error(
+                    f"{consecutive_failures} consecutive failures - stopping early rather than "
+                    "continuing to hammer a possibly rate-limited/blocked session. Re-run later."
+                )
+                break
+
         logger.info("=" * 60)
-        logger.info(f"Finished processing {total_vid_count} in {timedelta(seconds=total_time)}")
+        if circuit_broken:
+            logger.info(f"Stopped early after {i}/{total_vid_count} (circuit breaker) in {timedelta(seconds=total_time)}")
+        else:
+            logger.info(f"Finished processing {total_vid_count} in {timedelta(seconds=total_time)}")
         logger.info(f"Completed: {success_count} successful, {fail_count} failed")
         logger.info("=" * 60)
-        
+
     finally:
+        lock_handle.close()
         client.close()
+
+    if circuit_broken:
+        sys.exit(3)
 
 
 if __name__ == "__main__":
