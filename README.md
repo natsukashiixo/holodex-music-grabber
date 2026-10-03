@@ -81,6 +81,44 @@ python main.py --output-dir /path/to/music
 python main.py --db-path custom.db
 ```
 
+### Retry failed downloads
+
+```bash
+uv run main.py --retry-failed                # all retryable failures
+uv run main.py --retry-failed --limit=10     # small deterministic probe batch
+```
+
+### PO token provider (required for downloads)
+
+YouTube requires a proof-of-origin token for most media downloads. This project uses
+[bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider),
+run as a Docker container that yt-dlp talks to on `127.0.0.1:4416` (installed as a
+Python dependency; yt-dlp discovers it automatically).
+
+Requirements and notes:
+- The container must use **host networking** and the **host's systemd-resolved stub
+  resolv.conf**. A VPN killswitch can block DNS to external resolvers from a plain
+  Docker bridge network, causing `getaddrinfo EAI_AGAIN` failures inside the container
+  while the host itself resolves fine.
+- Name the container `bgutil-pot-provider` so there is only ever one instance. A second
+  copy with the same host port crash-loops on `EADDRINUSE`.
+
+```bash
+docker run -d --name bgutil-pot-provider \
+  --network host \
+  --restart unless-stopped \
+  -v /run/systemd/resolve/stub-resolv.conf:/etc/resolv.conf:ro \
+  brainicism/bgutil-ytdlp-pot-provider --host 0.0.0.0
+```
+
+Verify it's healthy:
+```bash
+docker logs bgutil-pot-provider --tail 5     # expect: "Started POT server ... 0.0.0.0:4416"
+docker exec bgutil-pot-provider node -e "require('dns').lookup('www.google.com',(e,a)=>console.log(e?e.code:a))"
+```
+
+If the container is already present but broken: `docker rm -f bgutil-pot-provider`, then rerun the command above.
+
 ## Database Schema
 
 The SQLite database tracks:
