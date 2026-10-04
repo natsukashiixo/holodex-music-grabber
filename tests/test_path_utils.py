@@ -2,7 +2,7 @@
 uncoordinated-strip corruption confirmed live in the DB) and fs_sanitize."""
 import pytest
 
-from src.path_utils import fs_sanitize, sanitize_suborg
+from src.path_utils import fs_sanitize, reupload_suffix, sanitize_suborg
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -61,3 +61,7 @@ def test_fs_sanitize_strips_trailing_dots_and_spaces():
 
 def test_fs_sanitize_empty_is_unknown():
     assert fs_sanitize("") == "unknown"
+
+
+def test_reupload_suffix_uses_two_digit_upload_date():
+    assert reupload_suffix("2026-10-02T13:00:08.000Z") == "_possible_reup261002"

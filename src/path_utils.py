@@ -1,4 +1,5 @@
 """Path and filesystem helpers"""
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 import unicodedata
@@ -116,6 +117,12 @@ def make_safe_path(path: Path, fallback_stem: str) -> Path:
 
 
 
+def reupload_suffix(available_at: str) -> str:
+    """Filename suffix marking a likely re-upload, e.g. "_possible_reup261002"
+    for an available_at of "2026-10-02T13:00:08.000Z"."""
+    return "_possible_reup" + datetime.fromisoformat(available_at[:10]).strftime("%y%m%d")
+
+
 def build_relative_song_path(
     org: Optional[str],
     sub_org: Optional[str],
@@ -123,9 +130,12 @@ def build_relative_song_path(
     channel_id: str,
     topic: str,
     title: str,
+    channel_subfolder: Optional[str] = None,
 ) -> Path:
     """
     Build the canonical relative output path for a song: Org/Sub-org/Channel/Covers|Originals/title.mp3.
+    `channel_subfolder` adds a level under the channel folder - used to group
+    HIDDEN-channel tracks by their "Provided to YouTube by" label.
     Pure function, no filesystem side effects - shared by the live downloader and
     scripts/reorganize_music_files.py so the two can never diverge again.
     """
@@ -138,6 +148,8 @@ def build_relative_song_path(
 
     # Channel folder always includes channel_id so same-name channels don't collide
     parts.append(fs_sanitize(f"{channel_name}_{channel_id}"))
+    if channel_subfolder:
+        parts.append(fs_sanitize(channel_subfolder))
 
     if topic == "Music_Cover":
         parts.append("Covers")

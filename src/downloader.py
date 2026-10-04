@@ -1,7 +1,8 @@
 """Downloader module using yt-dlp."""
+import re
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from dataclasses import dataclass
 
 import yt_dlp
@@ -10,6 +11,8 @@ from src.logging_config import get_logger
 from src.path_utils import build_relative_song_path, make_safe_path
 
 logger = get_logger(__name__)
+
+PROVIDED_BY_RE = re.compile(r"Provided to YouTube by (.+)")
 
 # TODO: implement total count + current download nr in the --retry thing
 
@@ -84,6 +87,7 @@ class MusicDownloader:
         base_output_dir: Path,
         cache_dir: Path = Path("cache"),
         enforce_sleep: bool = True, # to help with rate limiting, defaulting to true for the time being
+        ytdlp_verbose: bool = False,
     ):
         self.base_output_dir = base_output_dir
         self.cache_dir = cache_dir
@@ -99,7 +103,7 @@ class MusicDownloader:
             ],
             "parse_metadata": ["playlist_index:%(track_number)s"],
             #"cookiesfrombrowser": ('firefox',),
-            #"verbose": True,
+            "verbose": ytdlp_verbose,
             # ejs:github fetches the signature/n-challenge solver script live
             # from GitHub releases and can end up stuck on a stale cached
             # version incompatible with what yt-dlp expects (confirmed:
@@ -145,7 +149,8 @@ class MusicDownloader:
         channel_name: str,
         channel_id: str,
         topic: str,
-        title: str
+        title: str,
+        channel_subfolder: Optional[str] = None,
     ) -> Path:
         """
         Generate output path: Org/Sub-org/Channel/Covers|Originals/title.mp3
@@ -167,11 +172,23 @@ class MusicDownloader:
             channel_id=channel_id,
             topic=topic,
             title=title,
+            channel_subfolder=channel_subfolder,
         )
         output_path = self.base_output_dir / relative_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         return output_path
     
+    def fetch_provided_by(self, video_id: str) -> Optional[str]:
+        """
+        Metadata-only lookup (no media download) of the "Provided to YouTube by <label>"
+        line YouTube puts in auto-generated art-track descriptions. Returns the label,
+        or None if the description has no such line. Raises yt_dlp DownloadError if
+        the video can't be looked up.
+        """
+        info = self._ydl.extract_info(f"https://www.youtube.com/watch?v={video_id}", download=False, process=False)
+        match = PROVIDED_BY_RE.search((info or {}).get("description") or "")
+        return match.group(1).strip() if match else None
+
     def download(
         self,
         video_id: str,
@@ -180,7 +197,9 @@ class MusicDownloader:
         channel_name: str,
         channel_id : str,
         topic: str,
-        title: str
+        title: str,
+        collision_resolver: Optional[Callable[[Path], Path]] = None,
+        channel_subfolder: Optional[str] = None,
     ) -> DownloadResult:
         """
         Download a video as MP3 using yt-dlp.
@@ -192,11 +211,15 @@ class MusicDownloader:
             channel_name: Channel name
             topic: "Music_Cover" or "Original_Song"
             title: Video title
+            collision_resolver: Called with the occupied target path on a path
+                collision; returns the path to use instead. Defaults to
+                appending _<video_id>.
+            channel_subfolder: Extra folder level under the channel folder.
         
         Returns:
             DownloadResult with success status and file path
         """
-        output_path = self._get_output_path(org, sub_org, channel_name, channel_id, topic, title)
+        output_path = self._get_output_path(org, sub_org, channel_name, channel_id, topic, title, channel_subfolder)
         safe_output_path = make_safe_path(output_path, video_id)
         safe_output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -216,8 +239,24 @@ class MusicDownloader:
             # confirmed (via the DB, by video_id) that we haven't downloaded
             # this video before - so this must be a different video's file.
             # Disambiguate rather than silently overwriting it.
-            safe_output_path = safe_output_path.parent / f"{safe_output_path.stem}_{video_id}{safe_output_path.suffix}"
-            logger.warning(f"Path collision for {video_id}, using disambiguated path: {safe_output_path.name}")
+            occupied_path = safe_output_path
+            if collision_resolver:
+                safe_output_path = collision_resolver(occupied_path)
+            else:
+                safe_output_path = occupied_path.with_name(f"{occupied_path.stem}_{video_id}{occupied_path.suffix}")
+                logger.warning(f"Path collision for {video_id}, using disambiguated path: {safe_output_path.name}")
+            # Fallback stem keeps whatever suffix was added, in case the title
+            # plus suffix pushes the filename over the length limit.
+            added_suffix = ""
+            if safe_output_path.stem.startswith(occupied_path.stem):
+                added_suffix = safe_output_path.stem[len(occupied_path.stem):]
+            if added_suffix == f"_{video_id}":
+                added_suffix = ""
+            safe_output_path = make_safe_path(safe_output_path, f"{video_id}{added_suffix}")
+            if safe_output_path.exists():
+                # e.g. two re-uploads on the same day both wanting the same _possible_reupYYMMDD name
+                safe_output_path = safe_output_path.with_name(f"{safe_output_path.stem}_{video_id}{safe_output_path.suffix}")
+                logger.warning(f"Disambiguated path also taken for {video_id}, using: {safe_output_path.name}")
 
         url = f"https://www.youtube.com/watch?v={video_id}"
         # first check if cache file exists

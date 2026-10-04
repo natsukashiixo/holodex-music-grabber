@@ -5,10 +5,21 @@ from pathlib import Path
 from typing import Optional
 
 
+class _AppDebugOnlyFilter(logging.Filter):
+    """Let DEBUG records through only from this app's own loggers (__main__,
+    src.*), hiding third-party chatter like httpx/httpcore. Used at -v."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno > logging.DEBUG:
+            return True
+        return record.name == "__main__" or record.name == "src" or record.name.startswith("src.")
+
+
 def setup_logging(
     log_dir: Optional[Path] = None,
     log_level: str = "DEBUG",
-    app_name: str = "holodex-music-grabber"
+    app_name: str = "holodex-music-grabber",
+    verbosity: Optional[int] = None,
 ) -> logging.Logger:
     """
     Set up logging configuration.
@@ -23,6 +34,9 @@ def setup_logging(
             The file handler always captures DEBUG and above regardless of
             this setting - this only controls what's echoed to the console.
         app_name: Application name for log directory
+        verbosity: ssh-style -v count; overrides log_level when given.
+            0 = INFO, 1 = DEBUG from this app only, 2+ = DEBUG from everything
+            (main.py additionally turns on yt-dlp's own verbose mode at 3).
 
     Returns:
         Configured logger instance
@@ -77,7 +91,12 @@ def setup_logging(
     
     # Console handler - verbosity controlled by log_level
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(getattr(logging, log_level.upper()))
+    if verbosity is None:
+        console_handler.setLevel(getattr(logging, log_level.upper()))
+    else:
+        console_handler.setLevel(logging.INFO if verbosity <= 0 else logging.DEBUG)
+        if verbosity == 1:
+            console_handler.addFilter(_AppDebugOnlyFilter())
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
     

@@ -35,3 +35,32 @@ def test_console_handler_respects_requested_log_level(tmp_path):
     file_handlers = [h for h in root.handlers if isinstance(h, logging.handlers.RotatingFileHandler)]
     assert len(file_handlers) == 1
     assert file_handlers[0].level == logging.DEBUG
+
+
+def _console_handler(root):
+    return next(h for h in root.handlers if isinstance(h, logging.StreamHandler)
+                and not isinstance(h, logging.handlers.RotatingFileHandler))
+
+
+def _shown_on_console(handler, logger_name, level):
+    record = logging.LogRecord(logger_name, level, __file__, 0, "msg", None, None)
+    return level >= handler.level and handler.filter(record)
+
+
+def test_verbosity_zero_is_info(tmp_path):
+    handler = _console_handler(setup_logging(log_dir=tmp_path, app_name="v0", verbosity=0))
+    assert _shown_on_console(handler, "src.utils", logging.INFO)
+    assert not _shown_on_console(handler, "src.utils", logging.DEBUG)
+
+
+def test_single_v_shows_app_debug_but_not_library_debug(tmp_path):
+    handler = _console_handler(setup_logging(log_dir=tmp_path, app_name="v1", verbosity=1))
+    assert _shown_on_console(handler, "src.utils", logging.DEBUG)
+    assert _shown_on_console(handler, "__main__", logging.DEBUG)
+    assert not _shown_on_console(handler, "httpx", logging.DEBUG)
+    assert _shown_on_console(handler, "httpx", logging.INFO)
+
+
+def test_double_v_shows_library_debug(tmp_path):
+    handler = _console_handler(setup_logging(log_dir=tmp_path, app_name="v2", verbosity=2))
+    assert _shown_on_console(handler, "httpx", logging.DEBUG)

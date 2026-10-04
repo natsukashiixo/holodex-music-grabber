@@ -134,3 +134,44 @@ def test_georestricted():
     assert not result.members_only
     assert not result.deleted
     assert not result.privated
+
+
+def _collision_setup(tmp_path):
+    base_dir = tmp_path / "Music"
+    cache_dir = tmp_path / "cache"
+    downloader = MusicDownloader(base_output_dir=base_dir, cache_dir=cache_dir, enforce_sleep=False)
+    common_kwargs = dict(
+        org="Org", sub_org="SubOrg", channel_name="Channel",
+        channel_id="chanA", topic="Original_Song", title="Same Title",
+    )
+    existing_path = downloader._get_output_path(**common_kwargs)
+    existing_path.write_bytes(b"video-a-content")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    (cache_dir / "videoB.mp3").write_bytes(b"video-b-content")
+    return downloader, common_kwargs, existing_path
+
+
+def test_download_collision_uses_resolver_path(tmp_path):
+    downloader, common_kwargs, existing_path = _collision_setup(tmp_path)
+
+    result = downloader.download(
+        video_id="videoB",
+        collision_resolver=lambda p: p.with_name(f"{p.stem}_possible_reup261002{p.suffix}"),
+        **common_kwargs,
+    )
+
+    assert result.success
+    assert result.file_path == existing_path.with_name("same title_possible_reup261002.mp3")
+    assert existing_path.read_bytes() == b"video-a-content"
+
+
+def test_download_collision_resolver_path_also_taken_appends_video_id(tmp_path):
+    downloader, common_kwargs, existing_path = _collision_setup(tmp_path)
+    reup_path = existing_path.with_name("same title_possible_reup261002.mp3")
+    reup_path.write_bytes(b"another-reupload-same-day")
+
+    result = downloader.download(video_id="videoB", collision_resolver=lambda p: reup_path, **common_kwargs)
+
+    assert result.success
+    assert result.file_path == existing_path.with_name("same title_possible_reup261002_videoB.mp3")
+    assert reup_path.read_bytes() == b"another-reupload-same-day"

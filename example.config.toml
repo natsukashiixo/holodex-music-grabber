@@ -5,3 +5,13 @@ cache_folder = ''
 
 [Keys]
 holodex_key = ""
+
+[Hidden]
+# Holodex reports some channels as channel_id "HIDDEN" (mostly YouTube auto-generated
+# art tracks). Only those whose description says "Provided to YouTube by <label>" with
+# one of these labels are downloaded, into <...>/__hidden/<label>/.
+accepted_providers = [
+    "Sony Music Entertainment (Japan) Inc.",
+    "Sony Music Labels Inc.",
+    "ANYCOLOR, Inc.",
+]

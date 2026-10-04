@@ -12,7 +12,10 @@ import argparse
 from src.db import Database
 from src.holodex import HolodexClient
 from src.downloader import MusicDownloader
-from src.utils import check_file_exists, verify_existing_files, process_video, song_to_holodex_video, calc_eta
+from src.utils import (
+    check_file_exists, verify_existing_files, process_video, song_to_holodex_video, calc_eta,
+    DEFAULT_HIDDEN_PROVIDER_ALLOWLIST,
+)
 from src.logging_config import setup_logging, get_logger
 from src.lockfile import acquire_lock, AlreadyRunningError
 
@@ -63,9 +66,6 @@ def expand_path(path_str: str) -> Path:
 def main():
     """Main function."""
     
-    # Set up logging first
-    setup_logging(log_level="INFO")
-    
     # Load config file
     config = load_config()
 
@@ -95,7 +95,7 @@ def main():
     )
     parser.add_argument(
         "--api-key",
-        help="Holodex API key. Mandatory if needing to call Holodex API aka for anything but --verify-files and --retry-failed",
+        help="Holodex API key. Mandatory unless running --verify-files and/or --retry-failed",
         default=os.getenv("HOLODEX_API_KEY")
     )
     parser.add_argument(
@@ -112,7 +112,8 @@ def main():
     parser.add_argument(
         "--verify-files",
         action="store_true",
-        help="Verify existing files and mark missing ones as deleted"
+        help="Mark DB rows whose file is missing on disk as deleted, then exit (no API key needed). "
+             "Combined with --retry-failed, runs the retry afterwards"
     )
     parser.add_argument(
         "--no-skip-existing",
@@ -134,13 +135,30 @@ def main():
              "succeed - useful for spot-checking a small batch (e.g. a new PO-token setup) before "
              "committing to a long full run."
     )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="count",
+        default=0,
+        help="Increase console verbosity (default INFO): -v debug output from this app, "
+             "-vv also from libraries (httpx), -vvv also yt-dlp's own verbose mode. "
+             "The log file always gets everything."
+    )
     args = parser.parse_args()
+
+    setup_logging(verbosity=args.verbose)
 
     hd_api_key = args.api_key or (config and config.get('Keys', {}).get('holodex_key'))
 
-    if not hd_api_key:
-        if any([args.retry_failed, args.verify_files]):
-            raise Exception('Holodex key not set as argument, in config or in environment variable. Pls fix')
+    # Only the normal run fetches from Holodex. --verify-files alone is local
+    # and exits after verifying; --retry-failed works from the DB (it only
+    # tries a best-effort channel lookup, which just fails quietly without a key).
+    fetches_from_holodex = not (args.verify_files or args.retry_failed)
+    if fetches_from_holodex and not hd_api_key:
+        parser.error("Holodex API key not set as argument, in config or in HOLODEX_API_KEY")
+
+    hidden_provider_allowlist = set(
+        (config or {}).get("Hidden", {}).get("accepted_providers", DEFAULT_HIDDEN_PROVIDER_ALLOWLIST)
+    )
 
     # Single-instance lock - co-located with the DB, since that's what a second
     # concurrent process would actually contend for (plus the shared cache dir).
@@ -158,13 +176,17 @@ def main():
     client = HolodexClient(api_key=hd_api_key)
     downloader = MusicDownloader(
         base_output_dir=args.output_dir,
-        cache_dir=default_cache_dir
+        cache_dir=default_cache_dir,
+        ytdlp_verbose=args.verbose >= 3,
     )
 
     try:
         if args.verify_files:
             logger.info("Verifying existing files...")
             verify_existing_files(db, downloader.base_output_dir)
+            if not args.retry_failed:
+                logger.info("Verification done.")
+                return
 
         if args.retry_failed:
             songs = db.get_songs_without_file_hash(exclude_unavailable=True)
@@ -190,7 +212,8 @@ def main():
             if i == 1 and not args.retry_failed:
                 logger.info("Processing videos (streaming from API)...")
             logger.info(f"[{i}/{total_vid_count}] Processing: {video.title}")
-            if process_video(video, db, downloader, skip_existing=args.no_skip_existing, client=client):
+            if process_video(video, db, downloader, skip_existing=args.no_skip_existing, client=client,
+                             hidden_provider_allowlist=hidden_provider_allowlist):
                 success_count += 1
                 consecutive_failures = 0
             else:

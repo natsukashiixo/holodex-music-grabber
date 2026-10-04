@@ -63,7 +63,8 @@ python main.py --api-key your_api_key_here
 
 ### Verify existing files
 
-Check if files in database still exist and mark missing ones as deleted:
+Check if files in database still exist and mark missing ones as deleted, then exit (no API key needed;
+add `--retry-failed` to run a retry afterwards):
 
 ```bash
 python main.py --verify-files
@@ -86,6 +87,16 @@ python main.py --db-path custom.db
 ```bash
 uv run main.py --retry-failed                # all retryable failures
 uv run main.py --retry-failed --limit=10     # small deterministic probe batch
+```
+
+### Verbosity
+
+Console output defaults to INFO; each `-v` adds more (like ssh). The log file always gets everything.
+
+```bash
+uv run main.py -v      # debug output from this app (incl. yt-dlp progress)
+uv run main.py -vv     # also debug output from libraries (httpx)
+uv run main.py -vvv    # also yt-dlp's own verbose mode
 ```
 
 ### PO token provider (required for downloads)

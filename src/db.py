@@ -251,6 +251,24 @@ class Database:
             row = cur.fetchone()
             return Song(**row) if row else None
 
+    def get_song_by_file_path(self, file_path: str) -> Optional[Song]:
+        with self.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM songs
+                WHERE file_path = ?
+                LIMIT 1
+            """, (file_path,))
+            row = cur.fetchone()
+            return Song(**row) if row else None
+
+    def update_song_file_path(self, video_id: str, file_path: str):
+        with self.cursor() as cur:
+            cur.execute(
+                "UPDATE songs SET file_path = ? WHERE video_id = ?",
+                (file_path, video_id),
+            )
+
     def get_latest_available_at_per_topic(self) -> Dict[str, Optional[tuple[str, str]]]:
         with self.cursor() as cur:
             cur.execute("""
@@ -283,6 +301,7 @@ class Database:
                     AND error NOT LIKE 'duration_out_of_bounds%'
                     AND error NOT LIKE '%Sign in to confirm your age%'
                     AND error NOT LIKE '%The uploader has not made this video available%'
+                    AND error NOT LIKE 'hidden_channel_rejected%'
                 ))
             """
 
