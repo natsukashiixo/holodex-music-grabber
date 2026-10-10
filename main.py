@@ -11,7 +11,7 @@ import argparse
 
 from src.db import Database
 from src.holodex import HolodexClient
-from src.downloader import MusicDownloader
+from src.downloader import MusicDownloader, DownloadResult
 from src.utils import (
     check_file_exists, verify_existing_files, process_video, song_to_holodex_video, calc_eta,
     DEFAULT_HIDDEN_PROVIDER_ALLOWLIST,
@@ -22,13 +22,25 @@ from src.lockfile import acquire_lock, AlreadyRunningError
 logger = get_logger(__name__)
 
 # Stop a run early rather than keep hammering a possibly rate-limited/bot-
-# blocked session once this many *consecutive* videos fail in a row,
-# regardless of error type - simpler than pattern-matching specific error
-# text, and also catches other "everything's suddenly broken" scenarios
+# blocked session once this many *consecutive* videos fail in a row.
+# Failures DownloadResult classifies as permanent (deleted, members-only,
+# georestricted, ...) or out-of-bounds durations don't count - a 10-track
+# region-locked album would otherwise trip it. Anything unclassified counts,
+# which also catches other "everything's suddenly broken" scenarios
 # (e.g. the PO-token provider going down mid-run) uniformly. 10 reacts within
 # ~40s at the observed ~4s/failure pace, while still tolerating a short
 # coincidental cluster of genuinely-dead videos from one terminated channel.
 CONSECUTIVE_FAILURE_THRESHOLD = 10
+
+def is_known_permanent_failure(db: Database, video_id: str) -> bool:
+    """True if the failure process_video just stored is a known per-video
+    condition rather than a possible rate limit / bot block."""
+    song = db.get_song(video_id)
+    if not song or not song.error:
+        return False
+    if song.error.startswith("duration_out_of_bounds"):
+        return True
+    return DownloadResult(success=False, error=song.error).permanent
 
 def load_config(config_path: Path = Path("config.toml")) -> Optional[Dict[str, Any]]:
     """
@@ -218,7 +230,8 @@ def main():
                 consecutive_failures = 0
             else:
                 fail_count += 1
-                consecutive_failures += 1
+                if not is_known_permanent_failure(db, video.video_id):
+                    consecutive_failures += 1
             end = time.time()
             ttc = end - start #ttc = time to complete :⁾
             total_time += ttc

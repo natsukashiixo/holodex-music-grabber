@@ -50,10 +50,19 @@ class DownloadResult:
 
     @property
     def deleted(self) -> bool:
+        # Bare "<id>: Video unavailable" is the same UNPLAYABLE / "This video is
+        # not available" status with the subreason dropped by yt-dlp's mweb
+        # client (seen on region-locked "- Topic" art tracks). End-anchored so
+        # the georestricted "Video unavailable. This video contains content
+        # from ..." variant isn't swept in. "This video is unavailable" is a
+        # status=ERROR video that oEmbed 404s on (removed album placeholders).
+        if self.error and self.error.rstrip().endswith(": Video unavailable"):
+            return True
         return _error_matches(
             self.error,
             "Video unavailable. This video has been removed by the uploader",
             "Video unavailable. This video is not available",
+            "This video is unavailable",
         )
 
     @property
@@ -75,6 +84,15 @@ class DownloadResult:
         return _error_matches(
             self.error,
             "The uploader has not made this video available",
+        )
+
+    @property
+    def permanent(self) -> bool:
+        """Failure is a known per-video condition, not a sign of rate limiting
+        or bot protection - must not count toward the circuit breaker."""
+        return (
+            self.members_only or self.privated or self.deleted
+            or self.georestricted or self.age_restricted or self.uploader_unavailable
         )
 
 class MusicDownloader:

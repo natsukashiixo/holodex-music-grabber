@@ -36,15 +36,13 @@ def test_unrelated_error_is_all_false():
         "HTTP Error 500: Internal Server Error",
         "urlopen error timed out",
         "content isn't available, try again later",
-        # Deliberately not treated as permanent - yt-dlp's generic catch-all,
-        # not safe to assume it always means permanent removal.
-        "This video is unavailable",
     ]:
         r = make(generic)
         assert not r.members_only, generic
         assert not r.deleted, generic
         assert not r.age_restricted, generic
         assert not r.uploader_unavailable, generic
+        assert not r.permanent, generic
 
 
 def test_members_only_variants():
@@ -119,7 +117,20 @@ def test_download_collision_disambiguates_instead_of_overwriting(tmp_path):
 def test_deleted_variants():
     assert make("Video unavailable. This video has been removed by the uploader").deleted
     assert make("Video unavailable. This video is not available").deleted
+    # Bare form: same UNPLAYABLE status with the subreason dropped (region-
+    # locked "- Topic" art tracks); and the status=ERROR removed-video form.
+    assert make("\x1b[0;31mERROR:\x1b[0m [youtube] NBWgFSl-XN0: Video unavailable").deleted
+    assert make("ERROR: [youtube] 3CNbK3fLoIs: This video is unavailable").deleted
     assert not make("Sign in to confirm you're not a bot").deleted
+
+
+def test_permanent():
+    assert make("ERROR: [youtube] NBWgFSl-XN0: Video unavailable").permanent
+    assert make("This video is available to this channel's members").permanent
+    assert make("who has blocked it in your country on copyright grounds").permanent
+    assert make("Sign in to confirm your age").permanent
+    assert not make("Sign in to confirm you're not a bot").permanent
+    assert not DownloadResult(success=True).permanent
 
 
 def test_georestricted():
