@@ -211,3 +211,5 @@ writeup.md
 config.toml
 db/*
 scripts/state/*
+# manual review export of channel_id=HIDDEN songs
+hidden_channel_review.csv
